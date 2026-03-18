@@ -1,0 +1,24 @@
+# Build Artifacts
+Transmorpher.rar
+dinput8.dll
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.rar
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sln.docconversations
+*.sln.ghost.pfx
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
