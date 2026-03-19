@@ -716,7 +716,7 @@ bool DoMorph(const char* cmd, WowObject* player) {
     }
     else if (strncmp(cmd, "SCALE:", 6) == 0) {
         float scale = (float)atof(cmd + 6);
-        if (scale >= 0.00f && scale <= 20.0f) {
+        if (scale > 0.001f && scale <= 20.0f) {
             // NO-OP: Skip if scale hasn't changed
             if (g_morphScale > scale - 0.001f && g_morphScale < scale + 0.001f) {
                 return false;
@@ -726,6 +726,15 @@ bool DoMorph(const char* cmd, WowObject* player) {
                 *(float*)(desc + 0x10) = scale;
                 update = true;
             }
+        } else if (scale <= 0.001f) {
+            // SCALE:0 RESET logic
+            if (g_morphScale <= 0.001f) return false; // Already reset
+            g_morphScale = 0.0f;
+            if (!g_suspended && g_saved) {
+                *(float*)(desc + 0x10) = g_origScale;
+                update = true;
+            }
+            Log("Character scale reset to %f", g_origScale);
         }
     }
     else if (strncmp(cmd, "ITEM:", 5) == 0) {
