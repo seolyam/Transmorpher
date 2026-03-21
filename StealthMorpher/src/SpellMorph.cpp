@@ -595,6 +595,41 @@ namespace {
 
 
 
+    static void SynchronizeSpellVisualRow(SpellVisualRec* finalRow, bool granular) {
+        if (!finalRow || finalRow == &g_nullVisualRec) return;
+
+        bool needsSync = false;
+        {
+            SharedLock lock(&g_spellMorphLock);
+            needsSync = (g_sanitizedPtrGeneration[finalRow] != g_morphGeneration);
+        }
+
+        if (needsSync) {
+            ExclusiveLock lock(&g_spellMorphLock); // Exclusive for patching
+            // Double check generation after acquiring exclusive lock
+            if (g_sanitizedPtrGeneration[finalRow] != g_morphGeneration) {
+                DWORD oldProt;
+                if (VirtualProtect(finalRow, 128, PAGE_READWRITE, &oldProt)) {
+                    // 1. ALWAYS restore from disk-loaded backup first to ensure a clean state
+                    auto itBackup = g_spellVisualRecs.find(finalRow->m_ID);
+                    if (itBackup != g_spellVisualRecs.end() && itBackup->second.size() >= 128) {
+                        std::memcpy(finalRow, itBackup->second.data(), 128);
+                    }
+
+                    // 2. Conditionally apply sanitization ONLY if granular optimizations are enabled
+                    if (granular) {
+                        SanitizeSpellVisualRec(finalRow, nullptr);
+                    }
+
+                    DWORD dummy;
+                    VirtualProtect(finalRow, 128, oldProt, &dummy);
+                    g_sanitizedPtrGeneration[finalRow] = g_morphGeneration;
+                }
+            }
+        }
+    }
+
+
     static SpellVisualRec* __cdecl Hooked_GetSpellVisualRow(SpellRec* pSpellRec) {
         if (!pSpellRec || !g_originalGetSpellVisualRow) {
             return &g_nullVisualRec;
@@ -630,25 +665,10 @@ namespace {
                 if (overrideRec) finalRow = overrideRec;
             }
 
-            // Apply In-Place Sanity/Optimization on the final row pointer (which is ALWAYS a DBC pointer now)
-            if (granular && finalRow && finalRow != &g_nullVisualRec) {
-                AcquireSRWLockExclusive(&g_spellMorphLock); // Exclusive for patching
-                if (g_sanitizedPtrGeneration[finalRow] != g_morphGeneration) {
-                    DWORD oldProt;
-                    if (VirtualProtect(finalRow, 128, PAGE_READWRITE, &oldProt)) {
-                        // Restore from disk-loaded backup if available to clear previous toggles
-                        auto itBackup = g_spellVisualRecs.find(finalRow->m_ID);
-                        if (itBackup != g_spellVisualRecs.end() && itBackup->second.size() >= 128) {
-                            std::memcpy(finalRow, itBackup->second.data(), 128);
-                        }
 
-                        SanitizeSpellVisualRec(finalRow, nullptr);
-                        VirtualProtect(finalRow, 128, oldProt, &oldProt);
-                        g_sanitizedPtrGeneration[finalRow] = g_morphGeneration;
-                    }
-                }
-                ReleaseSRWLockExclusive(&g_spellMorphLock);
-            }
+
+
+            SynchronizeSpellVisualRow(finalRow, granular);
 
             return finalRow ? finalRow : &g_nullVisualRec;
         }
