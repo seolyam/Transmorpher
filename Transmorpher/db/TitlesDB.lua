@@ -54,7 +54,7 @@ Transmorpher_Titles = {
 {id=85, name="%s the Supreme"},
 {id=86, name="%s of the Ten Storms"},
 {id=87, name="%s of the Emerald Dream"},
-{id=88, name="%s of the Shattered Halls"},
+--{id=88, name="%s of the Shattered Halls"}, -- No Title ID
 {id=89, name="Prophet %s"},
 {id=90, name="The Malefic %s"},
 {id=91, name="Stalker %s"},
@@ -76,11 +76,20 @@ Transmorpher_Titles = {
 {id=107, name="Grand Master Miner %s"},
 {id=108, name="Grand Master Skinner %s"},
 {id=109, name="Grand Master Tailor %s"},
+{id=110, name="Combatant %s"}, -- add
+{id=111, name="%s of Argus"}, -- add
+{id=112, name="%s of Khaz Modan"}, -- add
 {id=113, name="%s of Gnomeregan"},
+{id=114, name="%s the Lion Hearted"}, -- add
+{id=115, name="%s, Champion of Elune"}, -- add
+{id=116, name="%s, Hero of Orgrimmar"}, -- add
+{id=117, name="Plainsrunner %s"}, -- add
+{id=118, name="%s of the Darkspear"}, -- add
+{id=119, name="%s the Forsaken"}, -- add
 {id=120, name="%s the Magic Seeker"},
 {id=121, name="Twilight Vanquisher %s"},
 {id=122, name="%s, Conqueror of Naxxramas"},
-{id=123, name="Hero of the Frozen Wastes %s"},
+{id=123, name="%s, Hero of Northrend"}, -- change "Hero of the Frozen Wastes %s"
 {id=124, name="%s the Hallowed"},
 {id=125, name="Loremaster %s"},
 {id=126, name="%s of the Alliance"},
