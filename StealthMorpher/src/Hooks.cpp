@@ -102,6 +102,9 @@ extern uint32_t g_morphItems[20];
 extern float g_morphScale;
 extern uint32_t g_morphEnchantMH;
 extern uint32_t g_morphEnchantOH;
+extern uint32_t g_origEnchantMH;
+extern uint32_t g_origEnchantOH;
+extern uint32_t g_origItems[20];
 extern uint64_t g_playerGuid; // From dllmain.cpp
 
 static DWORD g_mountHookAddr = 0;
@@ -134,9 +137,9 @@ void __declspec(naked) MountDisplayHook()
         cmp byte ptr [g_mountHookBypass], 1
         je do_original
 
-        // GET LOCAL PLAYER GUID (Direct from 0x00BD07A0)
+        // GET LOCAL PLAYER GUID (Using globally captured g_playerGuid)
         push edi
-        mov edi, 0x00BD07A0
+        mov edi, offset g_playerGuid
         mov ebx, [edi]      // playerGuid Low
         cmp [eax], ebx
         jne pop_edi_orig_v
@@ -200,9 +203,18 @@ void __declspec(naked) MountDisplayHook()
         jne check_dbw_ids
         
         // It is Meta. Check setting.
-        cmp dword ptr [g_showMeta], 1
+        cmp dword ptr [g_keepShapeshift], 0
         je do_original       // Show Meta
-        jmp do_override_display // Hide Meta
+        
+        // Block Meta (force morph if any, else force original)
+        mov ebx, [g_morphDisplay]
+        test ebx, ebx
+        jnz do_override_generic
+        mov ebx, [g_origDisplay]
+        test ebx, ebx
+        jnz do_override_generic
+        mov ebx, [eax+0x110]
+        jmp do_override_generic
 
     check_dbw_ids:
         // 2. Check Deathbringer's Will (CORRECT Display IDs from buff data)
@@ -238,18 +250,18 @@ void __declspec(naked) MountDisplayHook()
 
     is_dbw:
         // DBW proc detected!
-        // Check if user wants to HIDE DBW procs (showDBW = 0)
-        cmp dword ptr [g_showDBW], 0
-        jne do_original // If showDBW = 1, allow DBW to show
+        cmp dword ptr [g_keepShapeshift], 0
+        je do_original // Option UNTICKED -> allow DBW
         
-        // User wants to hide DBW (showDBW = 0)
-        // Check if we have an active morph to show instead
-        cmp dword ptr [g_morphDisplay], 0
-        je do_original // No morph active, show native character
-        
-        // We have a morph, show it instead of DBW
-        mov ecx, dword ptr [g_morphDisplay]
-        jmp do_original
+        // Option TICKED -> block DBW (force morph if any, else force original)
+        mov ebx, [g_morphDisplay]
+        test ebx, ebx
+        jnz do_override_generic
+        mov ebx, [g_origDisplay]
+        test ebx, ebx
+        jnz do_override_generic
+        mov ebx, [eax+0x110]
+        jmp do_override_generic
 
     check_morph_active:
         // Try active morph first
@@ -285,84 +297,84 @@ void __declspec(naked) MountDisplayHook()
         mov eax, [eax+0x110]
         cmp ecx, eax
         pop eax
-        je do_override_display
+        je do_override_generic // Writing native -> force morph
         
         // Writing 0?
         test ecx, ecx
-        jz do_override_display
+        jz do_override_generic // Writing 0 -> force morph
         
-        // Shapeshift check
-        cmp dword ptr [g_keepShapeshift], 1
-        je do_override_display
-        jmp do_original
-
-    do_override_display:
-        mov ecx, dword ptr [g_morphDisplay]
-        jmp do_original
+        // Writing something else! (Form or Proc)
+        cmp dword ptr [g_keepShapeshift], 0
+        je do_original // Option UNTICKED -> allow form
+        
+        // Option TICKED -> force morph
+        jmp do_override_generic
 
     check_items:
         // --- CHECK 1.6: Items (283 to 319) ---
         cmp edx, 283
-        jb check_enchants
+        jb check_title // If below items, skip to title (enchants are handled inside items logic for simplicity)
         cmp edx, 319
-        ja check_enchants
+        ja check_title
 
-        // Index 283..319 contains visible item fields
-        // Slot = (Index - 283) / 2 + 1
+        // Visibility items (1..19) are at indices 283, 285, 287...
+        // We handle item IDs (even offset from 283) and enchants (odd offset) separately here.
         mov ebx, edx
         sub ebx, 283
         test ebx, 1
-        jnz do_original // Ignore odd indexes (enchants/etc) for now
+        jnz check_enchants_l1 // Odd offset = potential enchant
 
+        // It's an item slot ID write
         shr ebx, 1
         inc ebx // ebx = slot (1..19)
         
         // Safety: ensure ebx is in range 1..19
         cmp ebx, 1
-        jb do_original
+        jb check_title
         cmp ebx, 19
-        ja do_original
+        ja check_title
 
-        // Access g_morphItems[ebx]
-        // EAX is already on stack, we can use it
+        // Save original item ID
+        mov [g_origItems + ebx * 4], ecx
+        
+        // Apply morph if exists
         push eax
-        mov eax, ebx
-        shl eax, 2 // * 4
-        add eax, offset g_morphItems
-        mov eax, [eax]
-        
+        mov eax, [g_morphItems + ebx * 4]
         test eax, eax
-        jz pop_eax_and_original
+        jz pop_eax_orig_item
         
-        cmp eax, 0xFFFFFFFF // HIDDEN_SENTINEL
-        jne set_item_val
+        cmp eax, 0xFFFFFFFF // HIDDEN_SENTINEL?
+        jne set_morphed_item
         mov ecx, 0
-        jmp pop_eax_and_original
-        
-    set_item_val:
+        jmp pop_eax_orig_item
+    set_morphed_item:
         mov ecx, eax
-    pop_eax_and_original:
+    pop_eax_orig_item:
         pop eax
         jmp do_original
 
-    check_enchants:
-        // --- CHECK 1.7: Weapon Enchants (314, 316) ---
-        cmp edx, 314 // MH Enchant
-        je check_mh
-        cmp edx, 316 // OH Enchant
-        je check_oh
-        jmp check_title
-
-    check_mh:
-        cmp dword ptr [g_morphEnchantMH], 0
-        je do_original
-        mov ecx, dword ptr [g_morphEnchantMH]
+    check_enchants_l1:
+        // Enchant writes are usually at 314 (MH) and 316 (OH)
+        cmp edx, 314
+        je m_enchant_l1
+        cmp edx, 316
+        je o_enchant_l1
         jmp do_original
 
-    check_oh:
-        cmp dword ptr [g_morphEnchantOH], 0
-        je do_original
-        mov ecx, dword ptr [g_morphEnchantOH]
+    m_enchant_l1:
+        mov [g_origEnchantMH], ecx
+        mov ebx, [g_morphEnchantMH]
+        test ebx, ebx
+        jz do_original
+        mov ecx, ebx
+        jmp do_original
+
+    o_enchant_l1:
+        mov [g_origEnchantOH], ecx
+        mov ebx, [g_morphEnchantOH]
+        test ebx, ebx
+        jz do_original
+        mov ecx, ebx
         jmp do_original
 
     check_title:
@@ -371,9 +383,10 @@ void __declspec(naked) MountDisplayHook()
         jne do_original
 
         mov dword ptr [g_origTitle], ecx
-        cmp dword ptr [g_morphTitle], 0
-        je do_original
-        mov ecx, dword ptr [g_morphTitle]
+        mov ebx, [g_morphTitle]
+        test ebx, ebx
+        jz do_original
+        mov ecx, ebx
         jmp do_original
 
     do_original:
@@ -481,33 +494,32 @@ void __declspec(naked) UpdateDisplayInfoHook()
         cmp byte ptr [g_suspended], 1
         je do_orig_v
 
+        // EAX = descriptors base from Unit*
         mov eax, [ecx+8]
         test eax, eax
         jz do_orig_v
 
-        // GET LOCAL PLAYER GUID (Instant lookup from Object Manager)
-        mov edx, 0x00C79CE0
-        mov edx, [edx]
-        test edx, edx
-        jz do_orig_v
-        mov edx, [edx+0x2ED0]
-        test edx, edx
-        jz do_orig_v
-        
+        // GUID IDENTIFICATION: Only proceed if it is the local player
+        push edi
         push ebx
-        mov ebx, [edx+0xC0] // playerGuid Low
+        mov edi, offset g_playerGuid
+        mov ebx, [edi]      // playerGuid Low
         cmp [eax], ebx
-        jne pop_ebx_orig_v
-        
-        mov ebx, [edx+0xC4] // playerGuid High
-        cmp [eax+4], ebx
-        jne pop_ebx_orig_v
+        jne pop_ebx_edi_orig_v
+        mov ebx, [edi + 4]  // playerGuid High
+        cmp [eax + 4], ebx
+        jne pop_ebx_edi_orig_v
         
         pop ebx
+        pop edi
+        
+        // It is the player! Save the base and proceed
+        mov [g_playerDescBase], eax
         jmp do_verified_v
 
-    pop_ebx_orig_v:
+    pop_ebx_edi_orig_v:
         pop ebx
+        pop edi
         jmp do_orig_v
 
     do_verified_v:
@@ -518,11 +530,11 @@ void __declspec(naked) UpdateDisplayInfoHook()
         // a mount ID on during the transition, causing a visual flash.
         mov ebx, [eax+0x114] 
         test ebx, ebx
-        jz handle_base_morph
+        jz handle_items_morph
 
         mov ebx, dword ptr [g_morphMount]
         cmp ebx, 0
-        je handle_base_morph  // No morph set — let game use native mount
+        je handle_items_morph  // No morph set — let game use native mount
 
     write_mount:
         cmp ebx, 0xFFFFFFFF // HIDDEN_SENTINEL
@@ -530,8 +542,71 @@ void __declspec(naked) UpdateDisplayInfoHook()
         xor ebx, ebx
     do_cmp_mount:
         cmp [eax+0x114], ebx
-        je handle_base_morph
+        je handle_items_morph
         mov [eax+0x114], ebx
+
+    handle_items_morph:
+        // ENFORCE WEAPON MORPHS (283-319, slot 16, 17, 18)
+        // 283 = Left/Right Hand Item ID start
+        // Slot 16 (Main Hand) = index 283 + (16-1)*2 = 283 + 30 = 313 -> Wait, no.
+        // Slot = (Index - 283) / 2 + 1
+        // Index = (Slot - 1) * 2 + 283
+        
+        // Slot 16 (Main Hand): Index = 15*2 + 283 = 313
+        // Slot 17 (Off Hand): Index = 16*2 + 283 = 315
+        // Slot 18 (Ranged): Index = 17*2 + 283 = 317
+        
+        push esi
+        push edi
+        
+        // Main Hand (Slot 16)
+        mov esi, dword ptr [g_morphItems + 16*4]
+        test esi, esi
+        jz check_oh_v
+        cmp esi, 0xFFFFFFFF // HIDDEN_SENTINEL
+        jne write_mh_v
+        xor esi, esi
+    write_mh_v:
+        mov [eax+313*4], esi
+        
+    check_oh_v:
+        // Off Hand (Slot 17)
+        mov esi, dword ptr [g_morphItems + 17*4]
+        test esi, esi
+        jz check_ranged_v
+        cmp esi, 0xFFFFFFFF // HIDDEN_SENTINEL
+        jne write_oh_v
+        xor esi, esi
+    write_oh_v:
+        mov [eax+315*4], esi
+
+    check_ranged_v:
+        // Ranged (Slot 18)
+        mov esi, dword ptr [g_morphItems + 18*4]
+        test esi, esi
+        jz check_enchants_v
+        cmp esi, 0xFFFFFFFF // HIDDEN_SENTINEL
+        jne write_ranged_v
+        xor esi, esi
+    write_ranged_v:
+        mov [eax+317*4], esi
+
+    check_enchants_v:
+        // MH Enchant (314)
+        mov esi, dword ptr [g_morphEnchantMH]
+        test esi, esi
+        jz check_oh_ench_v
+        mov [eax+314*4], esi
+    check_oh_ench_v:
+        // OH Enchant (316)
+        mov esi, dword ptr [g_morphEnchantOH]
+        test esi, esi
+        jz pop_si_di_v
+        mov [eax+316*4], esi
+
+    pop_si_di_v:
+        pop edi
+        pop esi
 
     handle_base_morph:
         mov ebx, dword ptr [g_morphDisplay]
@@ -595,6 +670,8 @@ void __declspec(naked) UpdateDisplayInfoHook()
 }
 
 
+
+
 bool InstallUpdateDisplayInfoHook()
 {
     DWORD base = (DWORD)GetModuleHandleA("Wow.exe");
@@ -604,8 +681,8 @@ bool InstallUpdateDisplayInfoHook()
 
     g_updateDisplayHookAddr = FindUpdateDisplayInfoHook(base);
     if (g_updateDisplayHookAddr == 0) {
-        // Fallback
-        g_updateDisplayHookAddr = base + 0x33E410;
+        // Fallback: 3.3.5a 12340 CGUnit_C::UpdateDisplayInfo 
+        g_updateDisplayHookAddr = base + 0x33DE30;
         if (CGUnit_UpdateDisplayInfo) {
             g_updateDisplayHookAddr = (DWORD)(uintptr_t)CGUnit_UpdateDisplayInfo;
         }
@@ -658,6 +735,7 @@ bool InstallUpdateDisplayInfoHook()
 
     g_updateDisplayHookInstalled = true;
     Log("UpdateDisplayInfo hook installed at 0x%08X (len=%d)", (unsigned)g_updateDisplayHookAddr, hookLen);
+
     return true;
 }
 

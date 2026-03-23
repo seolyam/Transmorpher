@@ -273,6 +273,13 @@ end
 
 -- Send a morph command (tracked in SavedVariables)
 function ns.SendMorphCommand(cmd)
+    -- If a manual command is sent, clear the active loadout tracking.
+    -- This ensures that if the user manually changes a piece of gear,
+    -- the loadout system knows it's no longer perfectly matching the saved loadout.
+    if not ns.isApplyingLoadout then
+        ns.activeLoadoutUid = nil
+    end
+
     TrackMorphCommand(cmd)
     AppendCommand(cmd)
 

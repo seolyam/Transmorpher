@@ -20,14 +20,14 @@ bool g_suspended = false;
 
 // Originals
 uint32_t g_origDisplay = 0;
-static uint32_t g_origItems[20] = {0};
+uint32_t g_origItems[20] = {0};
 float g_origScale = 1.0f;
 static bool g_saved = false;
 uint32_t g_origMount = 0;
 static uint32_t g_origPetDisplay = 0;
 static uint32_t g_origHPetDisplay = 0;
-static uint32_t g_origEnchantMH = 0;
-static uint32_t g_origEnchantOH = 0;
+uint32_t g_origEnchantMH = 0;
+uint32_t g_origEnchantOH = 0;
 uint32_t g_origTitle = 0;
 
 // Active Morphs

@@ -466,7 +466,7 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
         local unit = ...
         if unit == "player" then
             local settings = ns.GetSettings()
-            local dbwActiveNow = false
+            local dbwActiveNow = (settings and settings.showDBWProc) and ns.HasDBWProc() or false
             if dbwActiveNow ~= lastDBWActive then
                 lastDBWActive = dbwActiveNow
                 if dbwActiveNow then
@@ -529,28 +529,10 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
         local curOH = GetInventoryItemLink("player", 17)
         if curMH ~= lastMainHand or curOH ~= lastOffHand then
             lastMainHand = curMH; lastOffHand = curOH
-            if TransmorpherCharacterState then
-                if TransmorpherCharacterState.EnchantMH and curMH then
-                    ns.SendMorphCommand("ENCHANT_MH:"..TransmorpherCharacterState.EnchantMH)
-                    if mainFrame.enchantSlots and mainFrame.enchantSlots["Enchant MH"] then
-                        local eid = TransmorpherCharacterState.EnchantMH
-                        local eName = ns.enchantDB and ns.enchantDB[eid] or tostring(eid)
-                        mainFrame.enchantSlots["Enchant MH"]:SetEnchant(eid, eName)
-                        mainFrame.enchantSlots["Enchant MH"].isMorphed = true
-                        ns.ShowMorphGlow(mainFrame.enchantSlots["Enchant MH"], "orange")
-                    end
-                end
-                if TransmorpherCharacterState.EnchantOH and curOH then
-                    ns.SendMorphCommand("ENCHANT_OH:"..TransmorpherCharacterState.EnchantOH)
-                    if mainFrame.enchantSlots and mainFrame.enchantSlots["Enchant OH"] then
-                        local eid = TransmorpherCharacterState.EnchantOH
-                        local eName = ns.enchantDB and ns.enchantDB[eid] or tostring(eid)
-                        mainFrame.enchantSlots["Enchant OH"]:SetEnchant(eid, eName)
-                        mainFrame.enchantSlots["Enchant OH"].isMorphed = true
-                        ns.ShowMorphGlow(mainFrame.enchantSlots["Enchant OH"], "orange")
-                    end
-                end
-            end
+            -- We no longer need to re-send enchant commands here.
+            -- The DLL's Layer 1 Hook (DescriptorWriteHook) intercepts the 
+            -- descriptor writes during the swap and enforces the morph 
+            -- without requiring a new command or a visual 'tick' (model rebuild).
             if ns.ScheduleDressingRoomSync then ns.ScheduleDressingRoomSync(0.05)
             elseif ns.SyncDressingRoom then ns.SyncDressingRoom() end
         end
@@ -638,14 +620,6 @@ do
     guard:SetScript("OnUpdate", function()
         if not TRANSMORPHER_DLL_LOADED then return end
         local inVehicle = UnitInVehicle("player")
-        if not inVehicle and UnitExists("target") then
-            local sc = UnitVehicleSeatCount("target")
-            if sc and sc > 0 then inVehicle = true
-            else
-                local name = UnitName("target") or ""
-                for _, p in ipairs(ns.vehicleKeywords) do if name:find(p) then inVehicle = true; break end end
-            end
-        end
         if inVehicle and not ns.wasInVehicleLastFrame then
             ns.wasInVehicleLastFrame = true
             if not ns.vehicleSuspended then
