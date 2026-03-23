@@ -738,6 +738,31 @@ namespace {
         Log("Identified %u visual IDs for protection whitelist", count);
     }
 
+    static bool IsVisualRowDeepProtected(SpellVisualRec* rec) {
+        if (!rec || rec == &g_nullVisualRec) return false;
+        
+        // 1. Check Root Visual ID and Custom Range (High ID)
+        if (g_protectedIds.count(rec->m_ID) || g_protectedVisualIds.count(rec->m_ID) || rec->m_ID > 80864) return true;
+
+        // 2. Check all Kit/Area components (Recursive scan of the mix)
+        // This handles Auras, Ground Effects, and specific Mechanic Kits
+        if (g_protectedIds.count(rec->m_precastKit)) return true;
+        if (g_protectedIds.count(rec->m_castKit)) return true;
+        if (g_protectedIds.count(rec->m_impactKit)) return true;
+        if (g_protectedIds.count(rec->m_stateKit)) return true;
+        if (g_protectedIds.count(rec->m_stateDoneKit)) return true;
+        if (g_protectedIds.count(rec->m_channelKit)) return true;
+        if (g_protectedIds.count(rec->m_casterImpactKit)) return true;
+        if (g_protectedIds.count(rec->m_targetImpactKit)) return true;
+        if (g_protectedIds.count(rec->m_missileTargetingKit)) return true;
+        if (g_protectedIds.count(rec->m_instantAreaKit)) return true;
+        if (g_protectedIds.count(rec->m_impactAreaKit)) return true;
+        if (g_protectedIds.count(rec->m_persistentAreaKit)) return true;
+        if (g_protectedIds.count(rec->m_missileModel)) return true;
+
+        return false;
+    }
+
     static bool IsCriticalVisual(uint32_t spellId, uint32_t visualId) {
         // 1. High ID bypass (Assume custom patch/essential mechanic)
         if (spellId > 80864 || visualId > 80864) return true;
@@ -844,23 +869,20 @@ namespace {
 
             // BYPASS LOGIC: Never hide manual morphs, Hostile/Boss abilities, or whitelisted critical visuals
             bool isManualMorph = (targetVisualId > 0 && targetVisualId != sourceVisualId);
-            if (granular && (isProtected || isManualMorph || IsImportantContext(g_currentCasterGUID) || IsCriticalVisual(sourceSpellId, sourceVisualId))) {
-                granular = false; 
-            }
-
             SpellVisualRec* finalRow = original;
             if (targetVisualId > 0 && targetVisualId != sourceVisualId) {
                 SpellVisualRec* overrideRec = GetDbcVisualRow(targetVisualId);
                 if (overrideRec) finalRow = overrideRec;
             }
 
+            bool isDeepProtected = IsVisualRowDeepProtected(finalRow);
+            if (granular && (isProtected || isManualMorph || IsImportantContext(g_currentCasterGUID) || isDeepProtected || IsCriticalVisual(sourceSpellId, sourceVisualId))) {
+                granular = false; 
+            }
+
             // OPTIMIZATION: Only synchronize if generation is behind OR granular state changed.
-            // Protection [v6.0]: Always synchronize to retail if protected, hostile/boss, or custom visual.
-            bool forceRetail = isProtected || 
-                               IsImportantContext(g_currentCasterGUID) || 
-                               g_protectedIds.count(finalRow->m_ID) || 
-                               g_protectedVisualIds.count(finalRow->m_ID) ||
-                               finalRow->m_ID > 80864;
+            // Protection [v6.0]: Always synchronize to retail if protected, hostile/boss, or deep whitelisted element.
+            bool forceRetail = isProtected || IsImportantContext(g_currentCasterGUID) || isDeepProtected;
             
             if (forceRetail || g_sanitizedPtrGeneration[finalRow] != g_morphGeneration || g_lastGranularState[finalRow] != granular) {
                 SynchronizeSpellVisualRow(finalRow, granular, forceRetail);

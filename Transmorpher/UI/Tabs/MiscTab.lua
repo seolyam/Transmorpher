@@ -88,7 +88,7 @@ ShowOptSubTab(1)
 -- OPT GENERAL (TOGGLES)
 -- ============================================================
 local optCard = CreateFrame("Frame", nil, optGeneralPanel)
-optCard:SetPoint("TOPLEFT", 8, -32); optCard:SetPoint("TOPRIGHT", -8, -32); optCard:SetHeight(380)
+optCard:SetPoint("TOPLEFT", 8, -48); optCard:SetPoint("TOPRIGHT", -8, -48); optCard:SetHeight(380)
 optCard:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
 optCard:SetBackdropColor(0.05, 0.055, 0.07, 0.93); optCard:SetBackdropBorderColor(0.56, 0.47, 0.20, 0.78)
 
@@ -97,6 +97,15 @@ optTitle:SetPoint("TOPLEFT", 12, -12); optTitle:SetText("|cffF5C842Spell Visibil
 
 local optDesc = optCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 optDesc:SetPoint("TOPLEFT", optTitle, "BOTTOMLEFT", 0, -4); optDesc:SetText("Toggle specific spell effects globally to maximize performance."); optDesc:SetTextColor(0.7, 0.7, 0.7)
+
+local optWarning = optCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+optWarning:SetPoint("TOPLEFT", optDesc, "BOTTOMLEFT", 0, -2)
+optWarning:SetText("|cffFF4444Warning:|r Some settings may hide boss mechanics even with active filters.")
+optWarning:SetTextColor(0.9, 0.3, 0.3)
+    
+    local optBenefit = optCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    optBenefit:SetPoint("TOPLEFT", optWarning, "BOTTOMLEFT", 0, -6)
+    optBenefit:SetText("|cff44ff44This optimization provides a massive FPS boost in raids and crowded areas.|r")
 
 local optimizationCheckboxes = {}
 
@@ -136,15 +145,15 @@ end
 
 
 
-local cbHideAll = CreateOptCheckbox("HideAll", "|cffFF4444[MASTER] Hide ALL Spells|r", "Completely disables all spell visuals globally for peak FPS.", "hideAllSpells", "HIDE_ALL")
-cbHideAll:SetPoint("TOPLEFT", 16, -52)
-
-local sep1 = optCard:CreateTexture(nil, "ARTWORK")
-sep1:SetSize(400, 1); sep1:SetPoint("TOPLEFT", 16, -86); sep1:SetTexture(1, 1, 1, 0.08)
+    local cbHideAll = CreateOptCheckbox("HideAll", "|cffFF4444[MASTER] Hide ALL Spells|r", "Completely disables all spell visuals globally for peak FPS.", "hideAllSpells", "HIDE_ALL")
+    cbHideAll:SetPoint("TOPLEFT", 16, -80)
+    
+    local sep1 = optCard:CreateTexture(nil, "ARTWORK")
+    sep1:SetSize(400, 1); sep1:SetPoint("TOPLEFT", 16, -108); sep1:SetTexture(1, 1, 1, 0.08)
 
 -- Column 1
-local col1X = 22
-local yPos1 = -98
+    local col1X = 22
+    local yPos1 = -120
 local rowH = 22
 local secGap = 32
 
@@ -172,8 +181,8 @@ CreateOptCheckbox("HideImpC", "Impact (Caster)", "Hides caster-side impact visua
 
 
 -- Column 2
-local col2X = 240
-local yPos2 = -98
+    local col2X = 240
+    local yPos2 = -120
 
 local sub4 = optCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 sub4:SetPoint("TOPLEFT", col2X - 4, yPos2); sub4:SetText("|cffA3A3A3World & Target Impacts|r")
