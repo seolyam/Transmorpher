@@ -37,41 +37,71 @@ local lastKnownForm = -1
 local lastMainHand, lastOffHand = nil, nil
 local lastDBWActive = false
 local lastKnownMounted = false
+local lastMetaAuraActive = false
+local ScheduleMorphSend
+
+local function CacheVehicleMountState()
+    if not TransmorpherCharacterState then
+        ns.savedMountDisplayForVehicle = false
+        return
+    end
+
+    local hasMountVisual = false
+    if TransmorpherCharacterState.MountHidden then
+        hasMountVisual = true
+    elseif TransmorpherCharacterState.MountDisplay and TransmorpherCharacterState.MountDisplay > 0 then
+        hasMountVisual = true
+    elseif TransmorpherCharacterState.Mounts then
+        for _, displayID in pairs(TransmorpherCharacterState.Mounts) do
+            if displayID and displayID > 0 then
+                hasMountVisual = true
+                break
+            end
+        end
+    end
+
+    ns.savedMountDisplayForVehicle = hasMountVisual
+end
+
+local function HasMetamorphosisAura()
+    for i = 1, 40 do
+        local _, _, _, _, _, _, _, _, _, _, spellID = UnitAura("player", i, "HELPFUL")
+        if not spellID then break end
+        if spellID == 47241 then
+            return true
+        end
+    end
+    return false
+end
+
+local function ForceMetaRecovery()
+    if ns.vehicleSuspended or ns.dbwSuspended then return end
+    ns.morphSuspended = false
+    if ns.SendRawMorphCommand then
+        ns.SendRawMorphCommand("RESUME")
+    end
+    ScheduleMorphSend(0.02)
+    ScheduleMorphSend(0.12)
+end
 
 -- ============================================================
 -- Smart Interaction Intervention — pre-emptive vehicle detection
 -- ============================================================
 local function HandleSmartIntervention(unit)
     if not unit or not UnitExists(unit) then return end
-    local name = UnitName(unit) or ""
-    local isVehicle = false
-
-    -- Automated seat detection
-    local seatCount = UnitVehicleSeatCount(unit)
-    if seatCount and seatCount > 0 then isVehicle = true end
-
-    -- Keyword detection
-    if not isVehicle then
-        for _, p in ipairs(ns.vehicleKeywords) do
-            if name:find(p) then isVehicle = true; break end
-        end
-    end
-
-    -- EXCLUDE: Local player (prevents intervention when mounting multi-seat mounts)
     if UnitIsUnit(unit, "player") then return end
 
-    if isVehicle and not ns.vehicleSuspended then
+    local seatCount = UnitVehicleSeatCount(unit)
+    if not (seatCount and seatCount > 0) then return end
+
+    if not ns.vehicleSuspended then
         ns.vehicleSuspended = true
         ns.wasInVehicleLastFrame = true
-        ns.savedMountDisplayForVehicle = (TransmorpherCharacterState and TransmorpherCharacterState.MountDisplay) or true
+        CacheVehicleMountState()
         ns.SendRawMorphCommand("MOUNT_RESET|SUSPEND")
     end
 end
 
--- Hook right-click on WorldFrame
-WorldFrame:HookScript("OnMouseDown", function(_, button)
-    if button == "RightButton" then HandleSmartIntervention("mouseover") end
-end)
 if InteractUnit then hooksecurefunc("InteractUnit", HandleSmartIntervention) end
 
 -- ============================================================
@@ -84,7 +114,7 @@ delayedSendTimer:SetScript("OnUpdate", function(self, elapsed)
     if self.remaining <= 0 then self:Hide(); ns.SendFullMorphState() end
 end)
 
-local function ScheduleMorphSend(delay)
+function ScheduleMorphSend(delay)
     -- Debounce: always reset the timer to prevent duplicate sends
     delayedSendTimer.remaining = delay or 0.05
     delayedSendTimer:Show()
@@ -178,6 +208,7 @@ local function RestoreBaseMorphAfterForm()
         ns.morphSuspended = false
         if not ns.dbwSuspended and not ns.vehicleSuspended then
             ns.SendRawMorphCommand("RESUME|" .. baseCmd)
+            ScheduleMorphSend(0.05)
         else
             ns.SendRawMorphCommand(baseCmd)
         end
@@ -236,7 +267,12 @@ function ns.CheckFormMorphs()
         if not ns.dbwSuspended and not ns.vehicleSuspended then ns.SendRawMorphCommand("SUSPEND") end
     elseif not shouldSuspend and ns.morphSuspended then
         ns.morphSuspended = false
-        if not ns.dbwSuspended and not ns.vehicleSuspended then ns.SendRawMorphCommand("RESUME") end
+        if not ns.dbwSuspended and not ns.vehicleSuspended then
+            local baseMorph = TransmorpherCharacterState and TransmorpherCharacterState.Morph
+            local resumeCmd = (baseMorph and baseMorph > 0) and ("RESUME|MORPH:" .. baseMorph) or "RESUME"
+            ns.SendRawMorphCommand(resumeCmd)
+            ScheduleMorphSend(0.05)
+        end
     end
 
     if ns.BroadcastMorphState and (morphChanged or wasFormActive) then ns.BroadcastMorphState(true) end
@@ -253,6 +289,13 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
         return
     end
 
+    if event == "SPELLS_CHANGED" then
+        if ns.SyncPlayerSpellbookVisibility then
+            ns.SyncPlayerSpellbookVisibility()
+        end
+        return
+    end
+
     if event == "PLAYER_LOGIN" then
         TRANSMORPHER_CMD = ""
         TRANSMORPHER_LOG = ""
@@ -260,7 +303,9 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
         if ns.InitializeDLLSettings then
             ns.InitializeDLLSettings()
         end
-        ns.SendRawMorphCommand("RESUME") -- Force clean state on login
+        if not ns.IsModelChangingForm() then
+            ns.SendRawMorphCommand("RESUME") -- Force clean state on login only when form should not stay native
+        end
         ns.p2pEnabled = ns.GetSettings().enableWorldSync ~= false
         
         -- Clear sync state for character switch
@@ -346,15 +391,23 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
             ns.Log("Character change detected in Lua (%s -> %s), wiping state for isolation.", TransmorpherCharacterState._lastGUID, currentGUID)
             -- Preserve settings, wipe morph state
             TransmorpherCharacterState = {
-                Items = {}, Morph = nil, Scale = nil, MountDisplay = nil, 
-                PetDisplay = nil, Mounts = {}, HiddenItems = {}, WeaponSets = {}, 
+                Items = {}, Morph = nil, Scale = nil, MountDisplay = nil,
+                PetDisplay = nil, Mounts = {}, HiddenItems = {}, WeaponSets = {},
                 Forms = {}, SpellMorphs = {}, _lastGUID = currentGUID
             }
         end
         TransmorpherCharacterState._lastGUID = currentGUID
         
+        if ns.ClearAllRuntimeSpellMorphs then
+            ns.ClearAllRuntimeSpellMorphs()
+        end
+
         lastKnownForm = GetShapeshiftForm()
-        lastKnownMounted = IsMounted() or false
+        lastKnownMounted = (IsMounted() and not UnitInVehicle("player")) or false
+
+        if ns.InitAuraSpellSwaps then
+            ns.InitAuraSpellSwaps()
+        end
 
         ns.CheckFormMorphs() -- Initial check
 
@@ -366,7 +419,7 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
             ns.vehicleSuspended = UnitInVehicle("player")
 
             if ns.vehicleSuspended and TransmorpherCharacterState then
-                ns.savedMountDisplayForVehicle = TransmorpherCharacterState.MountDisplay or true
+                CacheVehicleMountState()
                 ns.SendRawMorphCommand("MOUNT_RESET")
             end
 
@@ -375,7 +428,12 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
             end
         end
 
-              ns.MountManager.ApplyCorrectMorph(true)
+        if lastKnownMounted then
+            ns.SendRawMorphCommand("SET:MOUNTED:1")
+            ns.MountManager.ApplyCorrectMorph(true)
+        else
+            ns.SendRawMorphCommand("SET:MOUNTED:0")
+        end
         
         -- Sync is now handled immediately by ns.InitializeDLLSettings
         -- if DLL is already loaded, or when it loads.
@@ -390,13 +448,13 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
             JoinChannelByName("TransmorpherSync")
         end
     elseif event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" then
-        -- Don't send RESUME here if not suspended — it's a no-op but generates 
-        -- unnecessary command processing. Only resume if actually suspended.
-        if ns.morphSuspended or ns.dbwSuspended or ns.vehicleSuspended then
+        -- Don't send RESUME while a native shapeshift form should remain active.
+        -- That can wrongly restore the base morph during reload/login transitions.
+        if not ns.IsModelChangingForm() and (ns.morphSuspended or ns.dbwSuspended or ns.vehicleSuspended) then
             ns.SendRawMorphCommand("RESUME")
         end
         lastKnownForm = GetShapeshiftForm()
-        lastKnownMounted = IsMounted() or false
+        lastKnownMounted = (IsMounted() and not UnitInVehicle("player")) or false
         
         -- Reset mount manager cache so mount morph is re-sent after teleport
         if ns.MountManager.ResetForZoneChange then
@@ -412,7 +470,7 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
             ns.vehicleSuspended = UnitInVehicle("player")
 
             if ns.vehicleSuspended then
-                ns.savedMountDisplayForVehicle = (TransmorpherCharacterState and TransmorpherCharacterState.MountDisplay) or true
+                CacheVehicleMountState()
                 ns.SendRawMorphCommand("MOUNT_RESET")
             end
 
@@ -423,9 +481,11 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
             -- The DLL has persisted state, so re-sending on zone change is unnecessary.
         end
 
-        if IsMounted() then
-             ns.SendRawMorphCommand("SET:MOUNTED:1")
-             ns.MountManager.ApplyCorrectMorph(true)
+        if lastKnownMounted then
+            ns.SendRawMorphCommand("SET:MOUNTED:1")
+            ns.MountManager.ApplyCorrectMorph(true)
+        else
+            ns.SendRawMorphCommand("SET:MOUNTED:0")
         end
 
         if TransmorpherCharacterState and TransmorpherCharacterState.WorldTime then
@@ -461,10 +521,26 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
         -- if currentForm == lastKnownForm then return end -- Force check for custom morphs even if index same (e.g. reload)
         lastKnownForm = currentForm
         ns.CheckFormMorphs()
+        -- Sync mount state: shapeshifting often dismounts the player
+        local curMounted = IsMounted() and not UnitInVehicle("player")
+        if not curMounted and lastKnownMounted then
+            lastKnownMounted = false
+            ns.SendRawMorphCommand("SET:MOUNTED:0")
+        end
+        local metaAuraNow = HasMetamorphosisAura()
+        if lastMetaAuraActive and not metaAuraNow then
+            ForceMetaRecovery()
+        end
+        lastMetaAuraActive = metaAuraNow
         
     elseif event == "UNIT_AURA" then
         local unit = ...
         if unit == "player" then
+            local metaAuraNow = HasMetamorphosisAura()
+            if lastMetaAuraActive and not metaAuraNow then
+                ForceMetaRecovery()
+            end
+            lastMetaAuraActive = metaAuraNow
             local settings = ns.GetSettings()
             local dbwActiveNow = (settings and settings.showDBWProc) and ns.HasDBWProc() or false
             if dbwActiveNow ~= lastDBWActive then
@@ -484,10 +560,19 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
                     end
                 end
             end
+-- REMOVED: ScheduleMorphSend on buff changes was causing flicker/invisible when buffs refresh
+            -- We only check form morphs now - no refresh triggered by buff changes
             ns.CheckFormMorphs()
+            if ns.ScheduleAuraSpellSwapCheck then
+                ns.ScheduleAuraSpellSwapCheck()
+            end
         end
-        if IsMounted() then
+        local curMounted = IsMounted() and not UnitInVehicle("player")
+        if curMounted then
             ns.MountManager.ApplyCorrectMorph(false)
+        elseif lastKnownMounted then
+            lastKnownMounted = false
+            ns.SendRawMorphCommand("SET:MOUNTED:0")
         end
 
     elseif event == "UNIT_MODEL_CHANGED" then
@@ -542,7 +627,7 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
         if unit ~= "player" then return end
         if not ns.vehicleSuspended then
             ns.vehicleSuspended = true
-            ns.savedMountDisplayForVehicle = (TransmorpherCharacterState and TransmorpherCharacterState.MountDisplay) or true
+            CacheVehicleMountState()
             ns.SendRawMorphCommand("MOUNT_RESET|SUSPEND")
         else
             ns.SendRawMorphCommand("SUSPEND")
@@ -624,7 +709,7 @@ do
             ns.wasInVehicleLastFrame = true
             if not ns.vehicleSuspended then
                 ns.vehicleSuspended = true
-                ns.savedMountDisplayForVehicle = (TransmorpherCharacterState and TransmorpherCharacterState.MountDisplay) or true
+                CacheVehicleMountState()
                 ns.SendRawMorphCommand("MOUNT_RESET|SUSPEND")
             else
                 ns.SendRawMorphCommand("SUSPEND")
@@ -640,6 +725,29 @@ do
                     ns.UpdateSpecialSlots()
                 else ns.SendRawMorphCommand("RESUME") end
             end
+        end
+    end)
+end
+
+-- ============================================================
+-- MOUNT STATE SAFETY GUARD — periodic sync (catches all edge cases)
+-- ============================================================
+do
+    local mountGuard = CreateFrame("Frame")
+    local mountGuardInterval = 0
+    mountGuard:SetScript("OnUpdate", function(self, elapsed)
+        if not TRANSMORPHER_DLL_LOADED then return end
+        mountGuardInterval = mountGuardInterval + elapsed
+        if mountGuardInterval < 0.5 then return end
+        mountGuardInterval = 0
+
+        local isMounted = IsMounted() and not UnitInVehicle("player") and not ns.vehicleSuspended
+        if not isMounted and lastKnownMounted then
+            lastKnownMounted = false
+            ns.SendRawMorphCommand("SET:MOUNTED:0")
+        elseif isMounted and not lastKnownMounted then
+            lastKnownMounted = true
+            ns.SendRawMorphCommand("SET:MOUNTED:1")
         end
     end)
 end

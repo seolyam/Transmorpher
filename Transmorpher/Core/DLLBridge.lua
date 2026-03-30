@@ -52,6 +52,52 @@ local function GetWeaponSetKey()
 end
 ns.GetWeaponSetKey = GetWeaponSetKey
 
+local function GetSpellBookSpellId(spellBookIndex)
+    local bookType = BOOKTYPE_SPELL or "spell"
+    if type(GetSpellBookItemInfo) == "function" then
+        local spellType, spellId = GetSpellBookItemInfo(spellBookIndex, bookType)
+        if spellType == "SPELL" and spellId then
+            return tonumber(spellId)
+        end
+    end
+    if type(GetSpellLink) == "function" then
+        local link = GetSpellLink(spellBookIndex, bookType)
+        if link then
+            local spellId = tonumber(link:match("spell:(%d+)"))
+            if spellId and spellId > 0 then return spellId end
+        end
+    end
+    return nil
+end
+
+local function GetPlayerSpellbookSpellIds()
+    local ids, seen = {}, {}
+    local numTabs = GetNumSpellTabs() or 0
+    for tab = 1, numTabs do
+        local _, _, offset, numSpells = GetSpellTabInfo(tab)
+        if offset and numSpells then
+            for i = 1, numSpells do
+                local spellId = GetSpellBookSpellId(offset + i)
+                if spellId and spellId > 0 and not seen[spellId] then
+                    seen[spellId] = true
+                    table.insert(ids, spellId)
+                end
+            end
+        end
+    end
+    table.sort(ids)
+    return ids
+end
+
+function ns.SyncPlayerSpellbookVisibility()
+    if not ns.IsMorpherReady() then return end
+    ns.SendRawMorphCommand("SPELL_PLAYER_BOOK_CLEAR")
+    local spellIds = GetPlayerSpellbookSpellIds()
+    for _, spellId in ipairs(spellIds) do
+        ns.SendRawMorphCommand("SPELL_PLAYER_BOOK_ADD:" .. spellId)
+    end
+end
+
 local function TrackMorphCommand(cmd)
     local settings = ns.GetSettings()
     if not settings.saveMorphState then return end
@@ -221,7 +267,7 @@ local function TrackMorphCommand(cmd)
                     TransmorpherCharacterState.WeaponSets = {}
                 end
 
-                -- Preserve Forms
+                -- Preserve Forms and spell systems
                 if not TransmorpherCharacterState.Forms then TransmorpherCharacterState.Forms = {} end
                 if not TransmorpherCharacterState.SpellMorphs then TransmorpherCharacterState.SpellMorphs = {} end
             else
@@ -398,6 +444,7 @@ function ns.InitializeDLLSettings()
     ns.SendRawMorphCommand("SET:META:" .. (settings.showMetamorphosis and "1" or "0"))
     ns.SendRawMorphCommand("SET:SHAPE:" .. (settings.morphInShapeshift and "1" or "0"))
     ns.SendRawMorphCommand("SET:HIDE_ALL:" .. (settings.hideAllSpells and "1" or "0"))
+    ns.SendRawMorphCommand("SET:SHOW_OWN_SPELLS:" .. (settings.showOwnSpells and "1" or "0"))
     ns.SendRawMorphCommand("SET:HIDE_PRECAST:" .. (settings.hidePrecast and "1" or "0"))
     ns.SendRawMorphCommand("SET:HIDE_CAST:" .. (settings.hideCast and "1" or "0"))
     ns.SendRawMorphCommand("SET:HIDE_CHANNEL:" .. (settings.hideChannel and "1" or "0"))
@@ -421,6 +468,7 @@ function ns.InitializeDLLSettings()
             ns.SendRawMorphCommand("SPELL_WHITE_CARD:" .. id)
         end
     end
+    ns.SyncPlayerSpellbookVisibility()
     
 
     
@@ -521,8 +569,9 @@ function ns.SendFullMorphState()
                 table.insert(cmdQueue, "ITEM:" .. slot .. ":" .. item)
             end
         end
-        if TransmorpherCharacterState.SpellMorphs then
-            for sourceSpellId, targetSpellId in pairs(TransmorpherCharacterState.SpellMorphs) do
+        local effectiveSpellMorphs = ns.GetEffectiveSpellMorphPairs and ns.GetEffectiveSpellMorphPairs() or TransmorpherCharacterState.SpellMorphs
+        if effectiveSpellMorphs then
+            for sourceSpellId, targetSpellId in pairs(effectiveSpellMorphs) do
                 if sourceSpellId and targetSpellId and sourceSpellId > 0 and targetSpellId > 0 then
                     table.insert(cmdQueue, "SPELL_MORPH:" .. sourceSpellId .. ":" .. targetSpellId)
                 end
@@ -614,8 +663,9 @@ function ns.SendFullMorphState()
             end
         end
     end
-    if TransmorpherCharacterState.SpellMorphs then
-        for sourceSpellId, targetSpellId in pairs(TransmorpherCharacterState.SpellMorphs) do
+    local effectiveSpellMorphs = ns.GetEffectiveSpellMorphPairs and ns.GetEffectiveSpellMorphPairs() or TransmorpherCharacterState.SpellMorphs
+    if effectiveSpellMorphs then
+        for sourceSpellId, targetSpellId in pairs(effectiveSpellMorphs) do
             if sourceSpellId and targetSpellId and sourceSpellId > 0 and targetSpellId > 0 then
                 table.insert(cmdQueue, "SPELL_MORPH:" .. sourceSpellId .. ":" .. targetSpellId)
             end
@@ -626,6 +676,7 @@ function ns.SendFullMorphState()
 
     -- Optimization Settings (Granular)
     table.insert(cmdQueue, "SET:HIDE_ALL:" .. (settings.hideAllSpells and "1" or "0"))
+    table.insert(cmdQueue, "SET:SHOW_OWN_SPELLS:" .. (settings.showOwnSpells and "1" or "0"))
     table.insert(cmdQueue, "SET:HIDE_PRECAST:" .. (settings.hidePrecast and "1" or "0"))
     table.insert(cmdQueue, "SET:HIDE_CAST:" .. (settings.hideCast and "1" or "0"))
     table.insert(cmdQueue, "SET:HIDE_CHANNEL:" .. (settings.hideChannel and "1" or "0"))
@@ -653,4 +704,6 @@ function ns.SendFullMorphState()
     if #cmdQueue > 0 then
         ns.SendRawMorphCommand(table.concat(cmdQueue, "|"))
     end
+
+    ns.SyncPlayerSpellbookVisibility()
 end

@@ -106,6 +106,8 @@ extern uint32_t g_origEnchantMH;
 extern uint32_t g_origEnchantOH;
 extern uint32_t g_origItems[20];
 extern uint64_t g_playerGuid; // From dllmain.cpp
+extern uint32_t g_showMeta;
+extern uint32_t g_keepShapeshift;
 
 static DWORD g_mountHookAddr = 0;
 static bool  g_mountHookInstalled = false;
@@ -239,7 +241,7 @@ void __declspec(naked) MountDisplayHook()
         jne check_dbw_ids
         
         // It is Meta. Check setting.
-        cmp dword ptr [g_keepShapeshift], 0
+        cmp dword ptr [g_showMeta], 1
         je do_original       // Show Meta
         
         // Block Meta (force morph if any, else force original)
@@ -327,6 +329,10 @@ void __declspec(naked) MountDisplayHook()
         // Already writing the target morph?
         cmp ecx, ebx
         je do_original
+
+        // Writing the saved original display during a form teardown?
+        cmp ecx, dword ptr [g_origDisplay]
+        je do_override_generic
 
         // Writing native ID? (Offset 0x110)
         push eax
@@ -678,25 +684,48 @@ void __declspec(naked) UpdateDisplayInfoHook()
         pop esi
 
     handle_base_morph:
+        // Current display ID is at [eax+0x10C]
+        mov ebx, [eax+0x10C]
+        
+        // 1. Check Metamorphosis (ID: 25277)
+        cmp ebx, 25277
+        jne check_other_forms_v
+        
+        // It is Meta. Should we show it?
+        cmp dword ptr [g_showMeta], 1
+        je pop_ebx_and_cont // Option TICKED -> Show Meta (do nothing)
+        
+        // Option UNTICKED -> Override Meta with morph (or native)
+        jmp write_morph_v
+
+    check_other_forms_v:
+        // 2. Check if it is a DBW / Druid form (different from native)
+        // Native display ID is at [eax+0x110]
+        cmp ebx, [eax+0x110]
+        je write_morph_v    // If current IS native, proceed to write morph normally
+
+        // Saved original display can briefly appear when forms end; treat it like a transition
+        cmp ebx, dword ptr [g_origDisplay]
+        je write_morph_v
+        
+        // It is a form! Should we keep morph?
+        cmp dword ptr [g_keepShapeshift], 1
+        je write_morph_v    // Option TICKED -> Override form with morph
+        
+        // Option UNTICKED -> Allow form (do nothing)
+        jmp pop_ebx_and_cont
+
+    write_morph_v:
         mov ebx, dword ptr [g_morphDisplay]
         test ebx, ebx
-        jnz write_base_morph
+        jnz do_write_v
         
-        // No active morph — should we still block shapeshifts on original race?
-        cmp dword ptr [g_keepShapeshift], 1
-        jne pop_ebx_and_cont
-        
-        // Block: We want the original race ID
-        mov ebx, dword ptr [g_origDisplay]
-        test ebx, ebx
-        jnz write_base_morph
-        
-        // Fallback: Use NATIVE display ID from descriptors (Index 0x44 = 0x110)
+        // No morph set, use native
         mov ebx, [eax+0x110]
         test ebx, ebx
         jz pop_ebx_and_cont
 
-    write_base_morph:
+    do_write_v:
         cmp [eax+0x10C], ebx
         je pop_ebx_and_cont
         mov [eax+0x10C], ebx

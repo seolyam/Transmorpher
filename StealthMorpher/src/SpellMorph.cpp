@@ -9,8 +9,10 @@
 #include <cstring>
 #include <string>
 #include <cmath>
+#include <algorithm>
 
     static bool g_hideAllSpells = false;
+    static bool g_showOwnSpells = false;
     static bool g_hidePrecast = false;
     static bool g_hideCast = false;
     static bool g_hideChannel = false;
@@ -29,6 +31,8 @@
 
     static std::unordered_set<uint32_t> g_whiteCardSpells; // Custom Protection Whitelist
     static SRWLOCK g_whiteCardLock = SRWLOCK_INIT;
+    static std::unordered_set<uint32_t> g_playerSpellbookSpells;
+    static SRWLOCK g_playerSpellbookLock = SRWLOCK_INIT;
 
 // Use thread_local to track which unit is currently requesting a visual
 static thread_local uint64_t g_currentCasterGUID = 0;
@@ -97,7 +101,7 @@ namespace {
     };
 
     static std::unordered_map<uint32_t, uint32_t> g_spellMorphs;
-    static std::unordered_map<uint32_t, uint32_t> g_visualOverrides;
+    static std::unordered_map<uint32_t, uint32_t> g_spellToVisualCache;
     static SRWLOCK g_spellMorphLock = SRWLOCK_INIT;
 
     static bool g_hookInstalled = false;
@@ -117,7 +121,9 @@ namespace {
     static std::unordered_map<uint32_t, std::vector<uint8_t>> g_spellVisualRecs; // Addon overrides backup
     static std::unordered_set<uint32_t> g_protectedVisualIds; // IDs that MUST NOT be modified
     static std::unordered_map<uint32_t, std::vector<uint8_t>> g_retailVisualRecs; // Snapshot of original memory
+    static std::unordered_map<uint32_t, SpellVisualRec*> g_liveVisualRows; // Live client rows, including HD-only visuals
     static std::unordered_map<void*, bool> g_backupDataPtrMap; // For fast O(1) safety checks
+    static std::unordered_map<uint32_t, std::vector<uint32_t>> g_spellIdToAllVisualIds;
     
     // In-Place Optimization Data
     static std::vector<uint8_t> g_spellVisualBackup; // Original raw data of SpellVisual.dbc
@@ -134,7 +140,24 @@ namespace {
     static void SoftResetCache() {
         AcquireSRWLockExclusive(&g_spellMorphLock);
         g_morphGeneration++; // New lookups will use new keys, old pointers stay valid in the map
+        
+        // Clear ALL caches to force re-sync on next access
+        // This ensures that when morphs change, we re-apply the correct visual data
+        g_sanitizedPtrGeneration.clear();
+        g_lastGranularState.clear();
+        g_spellToVisualCache.clear();
+        g_visualIdToDbcPtrMap.clear();
+        g_liveVisualRows.clear();
+        
         ReleaseSRWLockExclusive(&g_spellMorphLock);
+    }
+
+    static void AppendUniqueVisualId(std::vector<uint32_t>& visualIds, uint32_t visualId) {
+        if (visualId == 0) return;
+        for (size_t i = 0; i < visualIds.size(); ++i) {
+            if (visualIds[i] == visualId) return;
+        }
+        visualIds.push_back(visualId);
     }
 
     static bool PreloadIdsFromDBC(const char* primary, const char* fallback1, const char* fallback2,
@@ -204,8 +227,9 @@ namespace {
             uint32_t magic, numRecords, numFields, recordSize, stringTableSize;
         };
 
-        // 1. Snapshot RETAIL Internal Data (No Pathing)
+        // 1. Snapshot RETAIL Internal Data FIRST (Highest Priority)
         // Access the game's internal DBC store directly.
+        // This captures the client's HD patches as the authoritative source.
         void* dbPtr = *reinterpret_cast<void**>(ADDR_SPELL_VISUAL_DB);
         if (dbPtr) {
             uint32_t* store = reinterpret_cast<uint32_t*>(dbPtr);
@@ -220,37 +244,52 @@ namespace {
                     std::vector<uint8_t> buffer(128);
                     std::memcpy(buffer.data(), rec, 128);
                     g_retailVisualRecs[vid] = buffer;
+                    g_liveVisualRows[vid] = reinterpret_cast<SpellVisualRec*>(rec);
                 }
-                Log("Snapshotted %zu RETAIL visuals from internal memory", g_retailVisualRecs.size());
+                Log("Snapshotted %zu RETAIL visuals from internal memory (HD patches preserved)", g_retailVisualRecs.size());
             }
         }
 
-        // 2. Load Current/Addon DBC (Optional Overrides)
+        // 2. Load Addon DBC as FALLBACK ONLY (Lower Priority)
+        // Only use addon DBC for entries NOT already in retail or for filling gaps
         const char* path = "Interface\\AddOns\\Transmorpher\\DBC\\SpellVisual.dbc";
-        Log("Preloading Addon Overrides: %s", path);
+        Log("Preloading Addon DBC as fallback: %s", path);
 
         PreloadValidationDBCs(); // Load validation data first
 
         FILE* f = nullptr;
         if (fopen_s(&f, path, "rb") != 0 || !f) {
-            Log("WARNING: Addon overrides (SpellVisual.dbc) not found. Using internal data only.");
+            Log("Addon SpellVisual.dbc not found. Using internal client data only.");
             return;
         }
 
         DBCHeader header;
         if (fread(&header, sizeof(header), 1, f) != 1 || header.magic != 0x43424457) {
-            fclose(f); return;
+            fclose(f); 
+            Log("Invalid Addon SpellVisual.dbc header.");
+            return;
         }
 
+        uint32_t addedCount = 0;
+        uint32_t skippedCount = 0;
         std::vector<uint8_t> buffer(header.recordSize);
         for (uint32_t i = 0; i < header.numRecords; ++i) {
             if (fread(buffer.data(), header.recordSize, 1, f) != 1) break;
             uint32_t vid = *reinterpret_cast<uint32_t*>(buffer.data());
-            g_spellVisualRecs[vid] = buffer;
-            g_backupDataPtrMap[g_spellVisualRecs[vid].data()] = true;
+            
+            // Only add to addon overrides if retail doesn't have this entry
+            // This ensures client HD patches are NOT overridden
+            if (g_retailVisualRecs.find(vid) == g_retailVisualRecs.end()) {
+                g_spellVisualRecs[vid] = buffer;
+                g_backupDataPtrMap[g_spellVisualRecs[vid].data()] = true;
+                addedCount++;
+            } else {
+                skippedCount++;
+            }
         }
         fclose(f);
-        Log("Preloaded %u visual records from %s", (uint32_t)g_spellVisualRecs.size(), path);
+        Log("Addon SpellVisual: Added %u fallback records, skipped %u (client HD data takes precedence)", 
+            addedCount, skippedCount);
     }
 
     static void PreloadSpellDBC() {
@@ -298,6 +337,9 @@ namespace {
             uint32_t mId = *reinterpret_cast<uint32_t*>(rec + 227 * 4);
             
             g_spellIdToVisualIdMap[id] = {v0, v1};
+            std::vector<uint32_t>& allVisuals = g_spellIdToAllVisualIds[id];
+            AppendUniqueVisualId(allVisuals, v0);
+            AppendUniqueVisualId(allVisuals, v1);
             g_spellRowPointers[id] = (void*)rec;
 
 
@@ -311,8 +353,6 @@ namespace {
         }
         Log("Preloaded %zu spells and names", g_spellNames.size());
     }
-
-    static std::unordered_map<uint32_t, uint32_t> g_spellToVisualCache;
 
     static SpellRec* GetSpellRecById(uint32_t spellId) {
         return nullptr;
@@ -430,18 +470,46 @@ namespace {
         {
             SharedLock lock(&g_spellMorphLock);
             auto it = g_visualIdToDbcPtrMap.find(visualId);
-            if (it != g_visualIdToDbcPtrMap.end()) return it->second;
+            if (it != g_visualIdToDbcPtrMap.end()) {
+                // Validate cached pointer is still in valid range
+                if (it->second && reinterpret_cast<uintptr_t>(it->second) > 0x10000) {
+                    return it->second;
+                }
+            }
         }
 
-        // 2. Use direct DBC lookup (Robust v4.2)
+        // 2. Use snapshotted LIVE client row from internal memory first.
+        // Some HD-only visuals are not returned by the normal row lookup, but they still
+        // exist in the loaded client table and must be patched in-place for optimization.
+        {
+            SharedLock lock(&g_spellMorphLock);
+            auto liveIt = g_liveVisualRows.find(visualId);
+            if (liveIt != g_liveVisualRows.end()) {
+                SpellVisualRec* liveRow = liveIt->second;
+                if (liveRow && reinterpret_cast<uintptr_t>(liveRow) > 0x10000) {
+                    g_visualIdToDbcPtrMap[visualId] = liveRow;
+                    return liveRow;
+                }
+            }
+        }
+
+        // 3. Use direct DBC lookup from LIVE client memory (Highest Priority fallback)
+        // This ensures we get the HD patch version
         SpellVisualRec* pLiveRow = GetLiveVisualRow(visualId);
-        if (pLiveRow) {
+        if (pLiveRow && reinterpret_cast<uintptr_t>(pLiveRow) > 0x10000) {
             ExclusiveLock lock(&g_spellMorphLock);
             g_visualIdToDbcPtrMap[visualId] = pLiveRow;
+            g_liveVisualRows[visualId] = pLiveRow;
             return pLiveRow;
         }
 
-        // 3. Fallback to backup ONLY if we can't find it in DBC (Safety)
+        // 4. Fallback to retail snapshot (captured at startup)
+        auto itRetail = g_retailVisualRecs.find(visualId);
+        if (itRetail != g_retailVisualRecs.end() && itRetail->second.size() >= sizeof(SpellVisualRec)) {
+            return const_cast<SpellVisualRec*>(reinterpret_cast<const SpellVisualRec*>(itRetail->second.data()));
+        }
+
+        // 5. Last resort: Use addon DBC ONLY if client has no data (Safety)
         return const_cast<SpellVisualRec*>(GetSafeSpellVisualRec(visualId));
     }
 
@@ -531,70 +599,9 @@ namespace {
         return 0;
     }
 
-    static void AddSourceVisualOverrides_NoLock(uint32_t sourceSpellId, uint32_t targetSpellId) {
-        bool added = false;
-
-        // Try disk-preloaded source spell visuals first.
-        auto it = g_spellIdToVisualIdMap.find(sourceSpellId);
-        if (it != g_spellIdToVisualIdMap.end()) {
-            uint32_t sourceVisual0 = it->second.first;
-            uint32_t sourceVisual1 = it->second.second;
-
-            if (sourceVisual0 > 0) {
-                uint32_t tv = SelectCompatibleTargetVisualId_NoLock(sourceSpellId, sourceVisual0, targetSpellId);
-                if (tv > 0) {
-                    g_visualOverrides[sourceVisual0] = tv;
-                    added = true;
-                }
-            }
-            if (sourceVisual1 > 0) {
-                uint32_t tv = SelectCompatibleTargetVisualId_NoLock(sourceSpellId, sourceVisual1, targetSpellId);
-                if (tv > 0) {
-                    g_visualOverrides[sourceVisual1] = tv;
-                    added = true;
-                }
-            }
-        }
-
-        if (!added) {
-            SpellRec* sourceRec = GetSpellRecById(sourceSpellId);
-            if (sourceRec) {
-                uint32_t sourceVisual0 = static_cast<uint32_t>(sourceRec->m_spellVisualID[0]);
-                uint32_t sourceVisual1 = static_cast<uint32_t>(sourceRec->m_spellVisualID[1]);
-
-                if (sourceVisual0 > 0) {
-                    uint32_t tv = SelectCompatibleTargetVisualId_NoLock(sourceSpellId, sourceVisual0, targetSpellId);
-                    if (tv > 0) {
-                        g_visualOverrides[sourceVisual0] = tv;
-                        added = true;
-                    }
-                }
-                if (sourceVisual1 > 0) {
-                    uint32_t tv = SelectCompatibleTargetVisualId_NoLock(sourceSpellId, sourceVisual1, targetSpellId);
-                    if (tv > 0) {
-                        g_visualOverrides[sourceVisual1] = tv;
-                        added = true;
-                    }
-                }
-            }
-        }
-
-        // Last resort: if sourceSpellId itself is a visual row id (non-standard use), map it.
-        if (!added && GetSpellVisualRecById(sourceSpellId)) {
-            uint32_t tv = SelectCompatibleTargetVisualId_NoLock(sourceSpellId, sourceSpellId, targetSpellId);
-            if (tv > 0) g_visualOverrides[sourceSpellId] = tv;
-        }
-    }
-
     static void RebuildVisualOverrides_NoLock() {
-        g_visualOverrides.clear();
-        for (auto it = g_spellMorphs.begin(); it != g_spellMorphs.end(); ++it) {
-            uint32_t sourceSpellId = it->first;
-            uint32_t targetSpellId = it->second;
-            uint32_t targetVisualId = ResolveTargetVisualId_NoLock(targetSpellId);
-            if (targetVisualId == 0) continue;
-            AddSourceVisualOverrides_NoLock(sourceSpellId, targetSpellId);
-        }
+        // No longer needed - we use g_spellMorphs directly with spell IDs
+        // This function is kept for API compatibility but does nothing
     }
 
     static bool IsValidReadPtr(uintptr_t ptr) {
@@ -634,51 +641,32 @@ namespace {
         return 0;
     }
 
+    static void CollectSpellVisualIds(uint32_t spellId, SpellRec* pSpellRec, std::vector<uint32_t>& outVisualIds) {
+        auto mapIt = g_spellIdToAllVisualIds.find(spellId);
+        if (mapIt != g_spellIdToAllVisualIds.end()) {
+            for (size_t i = 0; i < mapIt->second.size(); ++i) {
+                AppendUniqueVisualId(outVisualIds, mapIt->second[i]);
+            }
+        }
+
+        auto pairIt = g_spellIdToVisualIdMap.find(spellId);
+        if (pairIt != g_spellIdToVisualIdMap.end()) {
+            AppendUniqueVisualId(outVisualIds, pairIt->second.first);
+            AppendUniqueVisualId(outVisualIds, pairIt->second.second);
+        }
+
+        if (pSpellRec) {
+            AppendUniqueVisualId(outVisualIds, static_cast<uint32_t>(pSpellRec->m_spellVisualID[0]));
+            AppendUniqueVisualId(outVisualIds, static_cast<uint32_t>(pSpellRec->m_spellVisualID[1]));
+            AppendUniqueVisualId(outVisualIds, ResolveVisualIdFromSpellRec(pSpellRec));
+        }
+    }
+
     static uint32_t ResolveMissileIdFromSpellRec(SpellRec* rec) {
         if (!rec) return 0;
         uintptr_t base = reinterpret_cast<uintptr_t>(rec);
         // Field 227 (SpellMissileID) is at index 227 in 3.3.5a 12340
         return *reinterpret_cast<uint32_t*>(base + 227 * 4);
-    }
-
-    static bool IsImportantContext(uint64_t guid) {
-        if (guid == 0) return false;
-
-        // 1. Get Local Player GUID
-        typedef uint64_t (__cdecl* tGetActivePlayer)();
-        tGetActivePlayer GetActivePlayer = (tGetActivePlayer)0x004D3790;
-        uint64_t playerGuid = GetActivePlayer();
-        if (playerGuid == 0) return false;
-
-        // 2. Get Object Pointers
-        typedef void* (__cdecl* tGetObj)(uint64_t, uint32_t);
-        tGetObj GetObj = (tGetObj)0x004D4DB0;
-
-        void* caster = GetObj(guid, 0xFFFFFFFF);
-        void* player = GetObj(playerGuid, 0xFFFFFFFF);
-        if (!caster || !player) return false;
-
-        // 3. Identification
-        uint32_t type = *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(caster) + 0x20);
-
-        // Always show local player's own spells (never optimize/hide them)
-        if (guid == playerGuid) return true;
-
-        // If it's a boss, show everything immediately
-        typedef bool (__thiscall* tIsBossMob)(void*);
-        tIsBossMob IsBossMob = (tIsBossMob)0x00715D70;
-        if (type == 3 && IsBossMob(caster)) return true;
-
-        // If it's hostile to the player, show everything
-        typedef bool (__thiscall* tCanAttack)(void*, void*);
-        tCanAttack CanAttack = (tCanAttack)0x00729740;
-        if (CanAttack(caster, player)) return true;
-
-        // Fallback for custom cores where hostility checks may be unreliable:
-        // show NPC/Creature casts as important by default.
-        if (type == 3) return true;
-
-        return false;
     }
 
     static bool IsWhiteCardSpell(uint32_t spellId) {
@@ -687,10 +675,61 @@ namespace {
         return false;
     }
 
+    static bool IsPlayerSpellbookSpell(uint32_t spellId) {
+        if (spellId == 0) return false;
+        SharedLock lock(&g_playerSpellbookLock);
+        return g_playerSpellbookSpells.count(spellId) != 0;
+    }
+
     static std::unordered_set<uint32_t> g_protectedIds;
 
+    static const char* GetProtectedSpellsPath() {
+        return "Interface\\AddOns\\Transmorpher\\protected_spells.txt";
+    }
+
+    static void RebuildProtectedVisualIds_NoLock() {
+        g_protectedVisualIds.clear();
+        uint32_t count = 0;
+        for (uint32_t spellId : g_protectedIds) {
+            auto it = g_spellIdToVisualIdMap.find(spellId);
+            if (it != g_spellIdToVisualIdMap.end()) {
+                if (it->second.first > 0 && g_protectedVisualIds.insert(it->second.first).second) {
+                    count++;
+                }
+                if (it->second.second > 0 && g_protectedVisualIds.insert(it->second.second).second) {
+                    count++;
+                }
+            } else {
+                void* db = *reinterpret_cast<void**>(ADDR_SPELL_DB);
+                if (db) {
+                    void* pSpellRec = GetRow(db, spellId);
+                    if (pSpellRec) {
+                        uint32_t visual0 = *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(pSpellRec) + 131 * 4);
+                        uint32_t visual1 = *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(pSpellRec) + 132 * 4);
+                        if (visual0 > 0 && g_protectedVisualIds.insert(visual0).second) {
+                            count++;
+                        }
+                        if (visual1 > 0 && g_protectedVisualIds.insert(visual1).second) {
+                            count++;
+                        }
+                    }
+                }
+            }
+
+            auto allIt = g_spellIdToAllVisualIds.find(spellId);
+            if (allIt != g_spellIdToAllVisualIds.end()) {
+                for (size_t i = 0; i < allIt->second.size(); ++i) {
+                    if (g_protectedVisualIds.insert(allIt->second[i]).second) {
+                        count++;
+                    }
+                }
+            }
+        }
+        Log("Identified %u visual IDs for protection whitelist", count);
+    }
+
     static void LoadProtectedSpells() {
-        const char* path = "Interface\\AddOns\\Transmorpher\\protected_spells.txt";
+        const char* path = GetProtectedSpellsPath();
         FILE* f = nullptr;
         if (fopen_s(&f, path, "r") != 0 || !f) {
             Log("WARNING: protected_spells.txt not found at %s", path);
@@ -699,6 +738,7 @@ namespace {
 
         ExclusiveLock lock(&g_spellMorphLock);
         g_protectedIds.clear();
+        g_protectedVisualIds.clear();
         
         char line[64];
         uint32_t count = 0;
@@ -715,64 +755,46 @@ namespace {
 
     static void IdentifyProtectedVisualIds() {
         ExclusiveLock lock(&g_spellMorphLock);
-        uint32_t count = 0;
-        for (uint32_t spellId : g_protectedIds) {
-            uint32_t visualId = 0;
-            auto it = g_spellIdToVisualIdMap.find(spellId);
-            if (it != g_spellIdToVisualIdMap.end()) {
-                visualId = it->second.first; // v0
-            } else {
-                void* db = *reinterpret_cast<void**>(ADDR_SPELL_DB);
-                if (db) {
-                    void* pSpellRec = GetRow(db, spellId);
-                    if (pSpellRec) {
-                        visualId = *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(pSpellRec) + 131 * 4);
-                    }
-                }
-            }
-            if (visualId > 0) {
-                g_protectedVisualIds.insert(visualId);
-                count++;
-            }
-        }
-        Log("Identified %u visual IDs for protection whitelist", count);
+        RebuildProtectedVisualIds_NoLock();
     }
 
-    static bool IsVisualRowDeepProtected(SpellVisualRec* rec) {
-        if (!rec || rec == &g_nullVisualRec) return false;
-        
-        // 1. Check Root Visual ID and Custom Range (High ID)
-        if (g_protectedIds.count(rec->m_ID) || g_protectedVisualIds.count(rec->m_ID) || rec->m_ID > 80864) return true;
-
-        // 2. Check all Kit/Area components (Recursive scan of the mix)
-        // This handles Auras, Ground Effects, and specific Mechanic Kits
-        if (g_protectedIds.count(rec->m_precastKit)) return true;
-        if (g_protectedIds.count(rec->m_castKit)) return true;
-        if (g_protectedIds.count(rec->m_impactKit)) return true;
-        if (g_protectedIds.count(rec->m_stateKit)) return true;
-        if (g_protectedIds.count(rec->m_stateDoneKit)) return true;
-        if (g_protectedIds.count(rec->m_channelKit)) return true;
-        if (g_protectedIds.count(rec->m_casterImpactKit)) return true;
-        if (g_protectedIds.count(rec->m_targetImpactKit)) return true;
-        if (g_protectedIds.count(rec->m_missileTargetingKit)) return true;
-        if (g_protectedIds.count(rec->m_instantAreaKit)) return true;
-        if (g_protectedIds.count(rec->m_impactAreaKit)) return true;
-        if (g_protectedIds.count(rec->m_persistentAreaKit)) return true;
-        if (g_protectedIds.count(rec->m_missileModel)) return true;
+    static bool IsCriticalVisual(uint32_t spellId, uint32_t visualId) {
+        // Protection now depends only on protected_spells.txt-resolved spell/visual IDs.
+        if (g_protectedIds.count(spellId) || g_protectedIds.count(visualId)) return true;
 
         return false;
     }
 
-    static bool IsCriticalVisual(uint32_t spellId, uint32_t visualId) {
-        // 1. High ID bypass (Assume custom patch/essential mechanic)
-        if (spellId > 80864 || visualId > 80864) return true;
+    static bool RestoreSpellVisualRow(SpellVisualRec* row) {
+        if (!row || row == &g_nullVisualRec) return false;
+        if (g_backupDataPtrMap.count(row)) return false;
 
-        // 2. Global Protection Whitelist (ICC + 2.5 + 2.6)
-        if (g_protectedIds.count(spellId) || g_protectedIds.count(visualId)) return true;
+        const uint32_t visualId = static_cast<uint32_t>(row->m_ID);
+        auto it = g_retailVisualRecs.find(visualId);
+        if (it == g_retailVisualRecs.end() || it->second.size() < 128) {
+            return false;
+        }
 
-        // 3. White Card (Active User Whitelist)
-        if (IsWhiteCardSpell(spellId)) return true;
+        DWORD oldProt;
+        if (!VirtualProtect(row, 128, PAGE_READWRITE, &oldProt)) {
+            return false;
+        }
 
+        std::memcpy(row, it->second.data(), 128);
+
+        DWORD dummy;
+        VirtualProtect(row, 128, oldProt, &dummy);
+
+        g_sanitizedPtrGeneration.erase(row);
+        g_lastGranularState.erase(row);
+        return true;
+    }
+
+    static bool ShouldProtectVisualRow(uint32_t spellId, uint32_t visualId, SpellVisualRec* row) {
+        (void)row;
+        if (g_showOwnSpells && IsPlayerSpellbookSpell(spellId)) return true;
+        if (IsCriticalVisual(spellId, visualId)) return true;
+        if (g_protectedVisualIds.count(visualId)) return true;
         return false;
     }
 
@@ -781,52 +803,53 @@ namespace {
     static void SynchronizeSpellVisualRow(SpellVisualRec* finalRow, bool granular, bool isProtected) {
         if (!finalRow || finalRow == &g_nullVisualRec) return;
 
-        bool needsSync = false;
+        ExclusiveLock lock(&g_spellMorphLock); 
+        
+        // Skip for backup data (addon DBC)
+        if (g_backupDataPtrMap.count(finalRow)) {
+            return;
+        }
+
+        if (!granular || isProtected) {
+            RestoreSpellVisualRow(finalRow);
+            return;
+        }
+
+        DWORD oldProt;
+        if (VirtualProtect(finalRow, 128, PAGE_READWRITE, &oldProt)) {
+            // ALWAYS sanitize (hide) when granular is enabled
+            // This is the optimization that hides spell visuals
+            SanitizeSpellVisualRec(finalRow, nullptr);
+
+            DWORD dummy;
+            VirtualProtect(finalRow, 128, oldProt, &dummy);
+            g_sanitizedPtrGeneration[finalRow] = g_morphGeneration;
+            g_lastGranularState[finalRow] = granular;
+        }
+    }
+
+    static void SynchronizeSpellVisualId(uint32_t visualId, bool granular, bool isProtected) {
+        if (visualId == 0) return;
+
+        SpellVisualRec* liveRow = nullptr;
         {
             SharedLock lock(&g_spellMorphLock);
-            needsSync = (g_sanitizedPtrGeneration[finalRow] != g_morphGeneration) || 
-                        (g_lastGranularState[finalRow] != granular);
-        }
-
-        if (needsSync) {
-            ExclusiveLock lock(&g_spellMorphLock); 
-            
-            // ICC PROTECTION: If this visual ID is protected or forced, we MUST NOT sanitize it.
-            if (isProtected) granular = false;
-
-            if (g_sanitizedPtrGeneration[finalRow] != g_morphGeneration || g_lastGranularState[finalRow] != granular) {
-                if (g_backupDataPtrMap.count(finalRow)) {
-                    g_sanitizedPtrGeneration[finalRow] = g_morphGeneration;
-                    return;
-                }
-
-                DWORD oldProt;
-                if (VirtualProtect(finalRow, 128, PAGE_READWRITE, &oldProt)) {
-                    // 1. Restore base state. 
-                    // PROTECTED (ICC) -> Always use RETAIL snapshot.
-                    // OTHERS -> Use ADDON overrides (g_spellVisualRecs) with retail fallback.
-                    auto itBackup = g_retailVisualRecs.find(finalRow->m_ID);
-                    if (!isProtected) {
-                        auto itAddon = g_spellVisualRecs.find(finalRow->m_ID);
-                        if (itAddon != g_spellVisualRecs.end()) itBackup = itAddon;
-                    }
-
-                    if (itBackup != g_retailVisualRecs.end() && itBackup->second.size() >= 128) {
-                        std::memcpy(finalRow, itBackup->second.data(), 128);
-                    }
-
-                    // 2. Conditionally apply sanitization ONLY if granular optimizations are enabled
-                    if (granular) {
-                        SanitizeSpellVisualRec(finalRow, nullptr);
-                    }
-
-                    DWORD dummy;
-                    VirtualProtect(finalRow, 128, oldProt, &dummy);
-                    g_sanitizedPtrGeneration[finalRow] = g_morphGeneration;
-                    g_lastGranularState[finalRow] = granular;
-                }
+            auto it = g_liveVisualRows.find(visualId);
+            if (it != g_liveVisualRows.end()) {
+                liveRow = it->second;
             }
         }
+
+        if (!liveRow || liveRow == &g_nullVisualRec || reinterpret_cast<uintptr_t>(liveRow) < 0x10000) {
+            liveRow = GetLiveVisualRow(visualId);
+            if (liveRow && liveRow != &g_nullVisualRec && reinterpret_cast<uintptr_t>(liveRow) > 0x10000) {
+                ExclusiveLock lock(&g_spellMorphLock);
+                g_liveVisualRows[visualId] = liveRow;
+                g_visualIdToDbcPtrMap[visualId] = liveRow;
+            }
+        }
+
+        SynchronizeSpellVisualRow(liveRow, granular, isProtected);
     }
 
 
@@ -835,64 +858,80 @@ namespace {
             return &g_nullVisualRec;
         }
 
-        __try {
-            SpellVisualRec* original = g_originalGetSpellVisualRow(pSpellRec);
-            if (!original) return &g_nullVisualRec;
-
-            // OPTIMIZATION: Hide spells based on visibility settings (v4.0 Zero-Allocation In-Place)
-            // BOSS PROTECTION [v5.0]: Check if caster is a boss to prevent hiding critical mechanics
-            bool granular = (g_hideAllSpells || g_hidePrecast || g_hideCast || g_hideChannel || 
-                            g_hideAuraStart || g_hideAuraEnd || g_hideImpact || g_hideImpactCaster || 
-                            g_hideTargetImpact || g_hideAreaInstant || g_hideAreaImpact || 
-                            g_hideAreaPersistent || g_hideMissile || g_hideMissileMarker || 
-                            g_hideSoundMissile || g_hideSoundEvent);
-
-            uint32_t sourceSpellId = static_cast<uint32_t>(pSpellRec->m_ID);
-            uint32_t sourceVisualId = ResolveVisualIdFromSpellRec(pSpellRec);
-
-            // Resolve target visual if morphed (BYPASS if whitelisted)
-            uint32_t targetVisualId = 0;
-            bool isProtected = g_protectedIds.count(sourceSpellId);
-
-            if (!isProtected) {
-                AcquireSRWLockShared(&g_spellMorphLock);
-                if (sourceVisualId > 0) {
-                    auto ovIt = g_visualOverrides.find(sourceVisualId);
-                    if (ovIt != g_visualOverrides.end()) targetVisualId = ovIt->second;
-                }
-                auto spellIt = g_spellMorphs.find(sourceSpellId);
-                if (spellIt != g_spellMorphs.end()) {
-                    if (targetVisualId == 0) targetVisualId = SelectCompatibleTargetVisualId_NoLock(sourceSpellId, sourceVisualId, spellIt->second);
-                }
-                ReleaseSRWLockShared(&g_spellMorphLock);
-            }
-
-            // BYPASS LOGIC: Never hide manual morphs, Hostile/Boss abilities, or whitelisted critical visuals
-            bool isManualMorph = (targetVisualId > 0 && targetVisualId != sourceVisualId);
-            SpellVisualRec* finalRow = original;
-            if (targetVisualId > 0 && targetVisualId != sourceVisualId) {
-                SpellVisualRec* overrideRec = GetDbcVisualRow(targetVisualId);
-                if (overrideRec) finalRow = overrideRec;
-            }
-
-            bool isDeepProtected = IsVisualRowDeepProtected(finalRow);
-            if (granular && (isProtected || isManualMorph || IsImportantContext(g_currentCasterGUID) || isDeepProtected || IsCriticalVisual(sourceSpellId, sourceVisualId))) {
-                granular = false; 
-            }
-
-            // OPTIMIZATION: Only synchronize if generation is behind OR granular state changed.
-            // Protection [v6.0]: Always synchronize to retail if protected, hostile/boss, or deep whitelisted element.
-            bool forceRetail = isProtected || IsImportantContext(g_currentCasterGUID) || isDeepProtected;
-            
-            if (forceRetail || g_sanitizedPtrGeneration[finalRow] != g_morphGeneration || g_lastGranularState[finalRow] != granular) {
-                SynchronizeSpellVisualRow(finalRow, granular, forceRetail);
-            }
-
-            return finalRow ? finalRow : &g_nullVisualRec;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (reinterpret_cast<uintptr_t>(pSpellRec) < 0x10000) {
             return &g_nullVisualRec;
         }
+
+        SpellVisualRec* original = g_originalGetSpellVisualRow(pSpellRec);
+        if (!original || reinterpret_cast<uintptr_t>(original) < 0x10000) {
+            return &g_nullVisualRec;
+        }
+
+        if (original == &g_nullVisualRec) {
+            return original;
+        }
+
+        bool granular = (g_hideAllSpells || g_hidePrecast || g_hideCast || g_hideChannel ||
+                        g_hideAuraStart || g_hideAuraEnd || g_hideImpact || g_hideImpactCaster ||
+                        g_hideTargetImpact || g_hideAreaInstant || g_hideAreaImpact ||
+                        g_hideAreaPersistent || g_hideMissile || g_hideMissileMarker ||
+                        g_hideSoundMissile || g_hideSoundEvent);
+        uint32_t sourceSpellId = static_cast<uint32_t>(pSpellRec->m_ID);
+        uint32_t sourceVisualId = ResolveVisualIdFromSpellRec(pSpellRec);
+
+        uint32_t targetVisualId = 0;
+        bool isProtected = ShouldProtectVisualRow(sourceSpellId, sourceVisualId, original);
+
+        if (!isProtected) {
+            AcquireSRWLockShared(&g_spellMorphLock);
+            auto spellIt = g_spellMorphs.find(sourceSpellId);
+            if (spellIt != g_spellMorphs.end()) {
+                targetVisualId = SelectCompatibleTargetVisualId_NoLock(sourceSpellId, sourceVisualId, spellIt->second);
+            }
+            ReleaseSRWLockShared(&g_spellMorphLock);
+        }
+
+        SpellVisualRec* finalRow = original;
+        bool isManualMorph = false;
+        if (targetVisualId > 0 && targetVisualId != sourceVisualId) {
+            SpellVisualRec* overrideRec = GetDbcVisualRow(targetVisualId);
+            if (overrideRec && overrideRec != &g_nullVisualRec) {
+                finalRow = overrideRec;
+                isManualMorph = true;
+            }
+        }
+
+        if (!finalRow || reinterpret_cast<uintptr_t>(finalRow) < 0x10000 || finalRow == &g_nullVisualRec) {
+            return &g_nullVisualRec;
+        }
+
+        std::vector<uint32_t> sourceVisualIds;
+        CollectSpellVisualIds(sourceSpellId, pSpellRec, sourceVisualIds);
+        AppendUniqueVisualId(sourceVisualIds, static_cast<uint32_t>(original->m_ID));
+
+        if (!sourceVisualIds.empty()) {
+            for (size_t i = 0; i < sourceVisualIds.size(); ++i) {
+                uint32_t visualId = sourceVisualIds[i];
+                SpellVisualRec* row = GetDbcVisualRow(visualId);
+                bool protectVisual = ShouldProtectVisualRow(sourceSpellId, visualId, row);
+                SynchronizeSpellVisualId(visualId, granular, protectVisual);
+            }
+        } else {
+            SynchronizeSpellVisualId(sourceVisualId, granular, isProtected);
+        }
+
+        bool protectFinal = ShouldProtectVisualRow(sourceSpellId, static_cast<uint32_t>(finalRow->m_ID), finalRow);
+        SynchronizeSpellVisualRow(finalRow, granular && !isManualMorph, protectFinal);
+
+        if (granular && !isManualMorph && !protectFinal) {
+            return &g_nullVisualRec;
+        }
+
+        if (!finalRow || reinterpret_cast<uintptr_t>(finalRow) < 0x10000) {
+            return &g_nullVisualRec;
+        }
+
+        return finalRow;
     }
 }
 
@@ -915,6 +954,51 @@ static SpellVisualRec* __fastcall Hooked_GetCastVisual(void* pThis, void* edx, S
     }
     
     SpellVisualRec* res = g_originalGetCastVisual(pThis, pSpellRec);
+
+    if (pSpellRec && res && res != &g_nullVisualRec && reinterpret_cast<uintptr_t>(res) > 0x10000) {
+        bool granular = (g_hideAllSpells || g_hidePrecast || g_hideCast || g_hideChannel ||
+                        g_hideAuraStart || g_hideAuraEnd || g_hideImpact || g_hideImpactCaster ||
+                        g_hideTargetImpact || g_hideAreaInstant || g_hideAreaImpact ||
+                        g_hideAreaPersistent || g_hideMissile || g_hideMissileMarker ||
+                        g_hideSoundMissile || g_hideSoundEvent);
+        uint32_t sourceSpellId = static_cast<uint32_t>(pSpellRec->m_ID);
+        uint32_t returnedVisualId = static_cast<uint32_t>(res->m_ID);
+        uint32_t sourceVisualId = ResolveVisualIdFromSpellRec(pSpellRec);
+        uint32_t targetVisualId = 0;
+
+        AcquireSRWLockShared(&g_spellMorphLock);
+        auto spellIt = g_spellMorphs.find(sourceSpellId);
+        if (spellIt != g_spellMorphs.end()) {
+            targetVisualId = SelectCompatibleTargetVisualId_NoLock(sourceSpellId, sourceVisualId, spellIt->second);
+        }
+        ReleaseSRWLockShared(&g_spellMorphLock);
+
+        bool isManualMorph = (targetVisualId > 0 && targetVisualId != sourceVisualId && returnedVisualId == targetVisualId);
+
+        std::vector<uint32_t> visualIds;
+        CollectSpellVisualIds(sourceSpellId, pSpellRec, visualIds);
+        AppendUniqueVisualId(visualIds, returnedVisualId);
+
+        bool protectReturned = ShouldProtectVisualRow(sourceSpellId, returnedVisualId, res);
+
+        if (!visualIds.empty()) {
+            for (size_t i = 0; i < visualIds.size(); ++i) {
+                uint32_t visualId = visualIds[i];
+                SpellVisualRec* row = GetDbcVisualRow(visualId);
+                bool protectVisual = ShouldProtectVisualRow(sourceSpellId, visualId, row);
+                SynchronizeSpellVisualId(visualId, granular, protectVisual);
+            }
+        } else {
+            SynchronizeSpellVisualRow(res, granular && !isManualMorph, protectReturned);
+        }
+
+        SynchronizeSpellVisualRow(res, granular && !isManualMorph, protectReturned);
+
+        if (granular && !isManualMorph && !protectReturned) {
+            g_currentCasterGUID = 0;
+            return &g_nullVisualRec;
+        }
+    }
     
     g_currentCasterGUID = 0; // Reset after visual resolution
     return res;
@@ -1000,6 +1084,7 @@ bool InstallSpellVisualHook() {
     LoadProtectedSpells(); // Load from database first
     PreloadSpellDBC(); // Snapshots and identifies visual IDs using the loaded spells
     InstallCastVisualHook(); // Install the context tracker hook
+    IdentifyProtectedVisualIds();
 
     Log("Spell visual hook installed at 0x%08X", (unsigned)ADDR_GET_SPELL_VISUAL_ROW);
     return true;
@@ -1039,6 +1124,61 @@ void UninstallSpellVisualHook() {
             VirtualProtect((void*)(rowAddr + 227 * 4), 4, oldProt, &dummy);
         }
     }
+
+static std::unordered_map<uint32_t, uint32_t> g_originalVisualIds;
+
+void PatchSpellVisualId(uint32_t sourceSpellId, uint32_t targetSpellId) {
+    if (sourceSpellId == 0 || targetSpellId == 0) return;
+
+    auto srcIt = g_spellRowPointers.find(sourceSpellId);
+    if (srcIt == g_spellRowPointers.end() || !srcIt->second) return;
+
+    uint32_t targetVisualId = 0;
+    auto tgtMapIt = g_spellIdToVisualIdMap.find(targetSpellId);
+    if (tgtMapIt != g_spellIdToVisualIdMap.end()) {
+        targetVisualId = tgtMapIt->second.first;
+        if (targetVisualId == 0) targetVisualId = tgtMapIt->second.second;
+    }
+    if (targetVisualId == 0) return;
+
+    uintptr_t rowAddr = (uintptr_t)srcIt->second;
+    if (g_originalVisualIds.find(sourceSpellId) == g_originalVisualIds.end()) {
+        g_originalVisualIds[sourceSpellId] = *reinterpret_cast<uint32_t*>(rowAddr + 131 * 4);
+    }
+
+    DWORD oldProt;
+    if (VirtualProtect((void*)(rowAddr + 131 * 4), 4, PAGE_EXECUTE_READWRITE, &oldProt)) {
+        *reinterpret_cast<uint32_t*>(rowAddr + 131 * 4) = targetVisualId;
+        DWORD dummy;
+        VirtualProtect((void*)(rowAddr + 131 * 4), 4, oldProt, &dummy);
+    }
+
+    Log("Patched spell %u visual ID: %u -> %u (target spell %u)",
+        sourceSpellId, g_originalVisualIds[sourceSpellId], targetVisualId, targetSpellId);
+}
+
+void RestoreSpellVisualId(uint32_t sourceSpellId) {
+    if (sourceSpellId == 0) return;
+
+    auto origIt = g_originalVisualIds.find(sourceSpellId);
+    if (origIt == g_originalVisualIds.end()) return;
+
+    auto srcIt = g_spellRowPointers.find(sourceSpellId);
+    if (srcIt == g_spellRowPointers.end() || !srcIt->second) return;
+
+    uintptr_t rowAddr = (uintptr_t)srcIt->second;
+    uint32_t originalId = origIt->second;
+
+    DWORD oldProt;
+    if (VirtualProtect((void*)(rowAddr + 131 * 4), 4, PAGE_EXECUTE_READWRITE, &oldProt)) {
+        *reinterpret_cast<uint32_t*>(rowAddr + 131 * 4) = originalId;
+        DWORD dummy;
+        VirtualProtect((void*)(rowAddr + 131 * 4), 4, oldProt, &dummy);
+    }
+
+    g_originalVisualIds.erase(sourceSpellId);
+    Log("Restored spell %u visual ID to %u", sourceSpellId, originalId);
+}
 
 bool SetSpellMorph(uint32_t sourceSpellId, uint32_t targetSpellId) {
     if (sourceSpellId == 0 || targetSpellId == 0) return false;
@@ -1087,6 +1227,10 @@ void RemoveSpellMorph(uint32_t sourceSpellId) {
 
     g_spellMorphs.erase(sourceSpellId);
     RebuildVisualOverrides_NoLock();
+    g_spellToVisualCache.clear();
+    g_originalVisualIds.erase(sourceSpellId);
+    g_sanitizedPtrGeneration.clear();
+    g_lastGranularState.clear();
     g_morphGeneration++;
     ReleaseSRWLockExclusive(&g_spellMorphLock);
 }
@@ -1094,8 +1238,10 @@ void RemoveSpellMorph(uint32_t sourceSpellId) {
 void ClearSpellMorphs() {
     AcquireSRWLockExclusive(&g_spellMorphLock);
     g_spellMorphs.clear();
-    g_visualOverrides.clear();
     g_spellToVisualCache.clear();
+    g_originalVisualIds.clear();
+    g_sanitizedPtrGeneration.clear();
+    g_lastGranularState.clear();
     g_morphGeneration++;
     ReleaseSRWLockExclusive(&g_spellMorphLock);
 }
@@ -1208,6 +1354,107 @@ std::string SearchSpells(const std::string& query) {
     return SearchSpellsInternal(query);
 }
 
+std::string ExportProtectedSpellIds() {
+    std::vector<uint32_t> ids;
+    {
+        SharedLock lock(&g_spellMorphLock);
+        ids.reserve(g_protectedIds.size());
+        for (std::unordered_set<uint32_t>::const_iterator it = g_protectedIds.begin(); it != g_protectedIds.end(); ++it) {
+            ids.push_back(*it);
+        }
+    }
+
+    std::sort(ids.begin(), ids.end());
+
+    std::string result;
+    for (size_t i = 0; i < ids.size(); ++i) {
+        if (!result.empty()) result += "|";
+        result += std::to_string((unsigned int)ids[i]);
+    }
+    return result;
+}
+
+bool AddProtectedSpellId(uint32_t spellId) {
+    if (spellId == 0) return false;
+    bool changed = false;
+    {
+        ExclusiveLock lock(&g_spellMorphLock);
+        std::pair<std::unordered_set<uint32_t>::iterator, bool> res = g_protectedIds.insert(spellId);
+        if (res.second) {
+            RebuildProtectedVisualIds_NoLock();
+            changed = true;
+        }
+    }
+    if (changed) {
+        SoftResetCache();
+    }
+    return changed;
+}
+
+bool RemoveProtectedSpellId(uint32_t spellId) {
+    if (spellId == 0) return false;
+    bool changed = false;
+    {
+        ExclusiveLock lock(&g_spellMorphLock);
+        size_t removed = g_protectedIds.erase(spellId);
+        if (removed > 0) {
+            RebuildProtectedVisualIds_NoLock();
+            changed = true;
+        }
+    }
+    if (changed) {
+        SoftResetCache();
+    }
+    return changed;
+}
+
+void ClearProtectedSpellIds() {
+    bool changed = false;
+    {
+        ExclusiveLock lock(&g_spellMorphLock);
+        changed = !g_protectedIds.empty() || !g_protectedVisualIds.empty();
+        g_protectedIds.clear();
+        g_protectedVisualIds.clear();
+    }
+    if (changed) {
+        SoftResetCache();
+    }
+}
+
+bool SaveProtectedSpellIds() {
+    std::vector<uint32_t> ids;
+    {
+        SharedLock lock(&g_spellMorphLock);
+        ids.reserve(g_protectedIds.size());
+        for (std::unordered_set<uint32_t>::const_iterator it = g_protectedIds.begin(); it != g_protectedIds.end(); ++it) {
+            ids.push_back(*it);
+        }
+    }
+
+    std::sort(ids.begin(), ids.end());
+
+    FILE* f = nullptr;
+    const char* path = GetProtectedSpellsPath();
+    if (fopen_s(&f, path, "w") != 0 || !f) {
+        Log("ERROR: failed to save protected spells to %s", path);
+        return false;
+    }
+
+    for (size_t i = 0; i < ids.size(); ++i) {
+        fprintf(f, "%u\n", (unsigned int)ids[i]);
+    }
+
+    fclose(f);
+    Log("Saved %u protected spell IDs to %s", (unsigned int)ids.size(), path);
+    return true;
+}
+
+void ReloadProtectedSpellIds() {
+    LoadProtectedSpells();
+    IdentifyProtectedVisualIds();
+    SoftResetCache();
+}
+
 size_t GetSpellDBCRecordCount() {
     return g_spellIdToVisualIdMap.size();
 }
@@ -1215,6 +1462,7 @@ size_t GetSpellDBCRecordCount() {
 // --- Visibility Logic (Post-Namespace for SoftResetCache Access) ---
 
 void SetHideAllSpells(bool hide) { g_hideAllSpells = hide; }
+void SetShowOwnSpells(bool show) { g_showOwnSpells = show; }
 void SetHidePrecast(bool hide) { g_hidePrecast = hide; }
 void SetHideCast(bool hide)    { g_hideCast = hide; }
 void SetHideChannel(bool hide) { g_hideChannel = hide; }
@@ -1232,6 +1480,7 @@ void SetHideSoundMissile(bool hide) { g_hideSoundMissile = hide; }
 void SetHideSoundEvent(bool hide)   { g_hideSoundEvent = hide; }
 
 bool GetHideAllSpells() { return g_hideAllSpells; }
+bool GetShowOwnSpells() { return g_showOwnSpells; }
 bool GetHidePrecast()   { return g_hidePrecast; }
 bool GetHideCast()      { return g_hideCast; }
 bool GetHideChannel()   { return g_hideChannel; }
@@ -1247,6 +1496,17 @@ bool GetHideMissile()      { return g_hideMissile; }
 bool GetHideMissileMarker() { return g_hideMissileMarker; }
 bool GetHideSoundMissile() { return g_hideSoundMissile; }
 bool GetHideSoundEvent()   { return g_hideSoundEvent; }
+
+void AddPlayerSpellbookSpellId(uint32_t spellId) {
+    if (spellId == 0) return;
+    ExclusiveLock lock(&g_playerSpellbookLock);
+    g_playerSpellbookSpells.insert(spellId);
+}
+
+void ClearPlayerSpellbookSpellIds() {
+    ExclusiveLock lock(&g_playerSpellbookLock);
+    g_playerSpellbookSpells.clear();
+}
 
 void SpellMorph_SoftResetCache() {
     SoftResetCache();

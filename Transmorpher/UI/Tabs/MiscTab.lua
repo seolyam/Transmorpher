@@ -63,23 +63,25 @@ optimizationPanel = optPanel
 
 -- Optimization Sub-Tab Bar
 local optSubTabBar = CreateFrame("Frame", nil, optPanel)
-optSubTabBar:SetSize(300, 24); optSubTabBar:SetPoint("TOPLEFT", 4, -4)
+optSubTabBar:SetSize(320, 24); optSubTabBar:SetPoint("TOPLEFT", 4, -4)
 
 local btnOptGeneral = CreateMiscSubTabBtn(1, "General Optimization")
 btnOptGeneral:SetParent(optSubTabBar); btnOptGeneral:SetPoint("LEFT", 0, 0); btnOptGeneral:SetSize(140, 24)
 btnOptGeneral:SetScript("OnClick", function() ShowOptSubTab(1) end)
 
-local btnOptProtect = CreateMiscSubTabBtn(2, "Spell Protection")
-btnOptProtect:SetParent(optSubTabBar); btnOptProtect:SetPoint("LEFT", btnOptGeneral, "RIGHT", 4, 0); btnOptProtect:SetSize(120, 24)
-btnOptProtect:SetScript("OnClick", function() ShowOptSubTab(2) end)
+local btnOptProtectedFile = CreateMiscSubTabBtn(2, "Protected File")
+btnOptProtectedFile:SetParent(optSubTabBar); btnOptProtectedFile:SetPoint("LEFT", btnOptGeneral, "RIGHT", 4, 0); btnOptProtectedFile:SetSize(110, 24)
+btnOptProtectedFile:SetScript("OnClick", function() ShowOptSubTab(2) end)
 
 local optGeneralPanel = CreateFrame("Frame", nil, optPanel); optGeneralPanel:SetAllPoints()
 local optProtectPanel = CreateFrame("Frame", nil, optPanel); optProtectPanel:SetAllPoints(); optProtectPanel:Hide()
+local optProtectedFilePanel = CreateFrame("Frame", nil, optPanel); optProtectedFilePanel:SetAllPoints(); optProtectedFilePanel:Hide()
 
 ShowOptSubTab = function(id)
     optGeneralPanel[id == 1 and "Show" or "Hide"](optGeneralPanel)
-    optProtectPanel[id == 2 and "Show" or "Hide"](optProtectPanel)
-    btnOptGeneral:SetActive(id == 1); btnOptProtect:SetActive(id == 2)
+    optProtectPanel:Hide()
+    optProtectedFilePanel[id == 2 and "Show" or "Hide"](optProtectedFilePanel)
+    btnOptGeneral:SetActive(id == 1); btnOptProtectedFile:SetActive(id == 2)
     PlaySound("gsTitleOptionOK")
 end
 ShowOptSubTab(1)
@@ -88,7 +90,7 @@ ShowOptSubTab(1)
 -- OPT GENERAL (TOGGLES)
 -- ============================================================
 local optCard = CreateFrame("Frame", nil, optGeneralPanel)
-optCard:SetPoint("TOPLEFT", 8, -48); optCard:SetPoint("TOPRIGHT", -8, -48); optCard:SetHeight(380)
+optCard:SetPoint("TOPLEFT", 8, -32); optCard:SetPoint("BOTTOMRIGHT", -8, 8)
 optCard:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
 optCard:SetBackdropColor(0.05, 0.055, 0.07, 0.93); optCard:SetBackdropBorderColor(0.56, 0.47, 0.20, 0.78)
 
@@ -125,6 +127,9 @@ local function CreateOptCheckbox(name, label, tooltip, settingKey, cmdPrefix)
         settings[settingKey] = checked
         if ns.IsMorpherReady() then
             ns.SendMorphCommand("SET:"..cmdPrefix..":"..(checked and "1" or "0"))
+            if settingKey == "showOwnSpells" and ns.SyncPlayerSpellbookVisibility then
+                ns.SyncPlayerSpellbookVisibility()
+            end
         end
         PlaySound(checked and "igMainMenuOptionCheckBoxOn" or "igMainMenuOptionCheckBoxOff")
     end)
@@ -147,15 +152,18 @@ end
 
     local cbHideAll = CreateOptCheckbox("HideAll", "|cffFF4444[MASTER] Hide ALL Spells|r", "Completely disables all spell visuals globally for peak FPS.", "hideAllSpells", "HIDE_ALL")
     cbHideAll:SetPoint("TOPLEFT", 16, -80)
+
+    local cbShowOwn = CreateOptCheckbox("ShowOwn", "|cff44ff88Show Spellbook Spells|r", "Keeps spells found in your current spellbook visible even when optimization is active. Morphed versions of those spellbook spells also stay visible.", "showOwnSpells", "SHOW_OWN_SPELLS")
+    cbShowOwn:SetPoint("LEFT", cbHideAll, "RIGHT", 170, 0)
     
     local sep1 = optCard:CreateTexture(nil, "ARTWORK")
-    sep1:SetSize(400, 1); sep1:SetPoint("TOPLEFT", 16, -108); sep1:SetTexture(1, 1, 1, 0.08)
+    sep1:SetHeight(1); sep1:SetPoint("TOPLEFT", 16, -108); sep1:SetPoint("TOPRIGHT", -16, -108); sep1:SetTexture(1, 1, 1, 0.08)
 
 -- Column 1
     local col1X = 22
     local yPos1 = -120
-local rowH = 22
-local secGap = 32
+local rowH = 20
+local secGap = 20
 
 local sub1 = optCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 sub1:SetPoint("TOPLEFT", 18, yPos1); sub1:SetText("|cffA3A3A3Casting & Auras|r")
@@ -226,7 +234,7 @@ local protTitle = protCard:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge
 protTitle:SetPoint("TOPLEFT", 14, -14); protTitle:SetText("|cffF5C842Spell Protection (White Card)|r")
 
 local protDesc = protCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-protDesc:SetPoint("TOPLEFT", protTitle, "BOTTOMLEFT", 0, -4); protDesc:SetText("Protect spells from optimization. Automated for custom IDs > 80864."); protDesc:SetTextColor(0.7, 0.7, 0.7)
+protDesc:SetPoint("TOPLEFT", protTitle, "BOTTOMLEFT", 0, -4); protDesc:SetText("Legacy local whitelist view. Runtime protection now depends on protected_spells.txt only."); protDesc:SetTextColor(0.7, 0.7, 0.7)
 
 -- Search Section (Left Column)
 local searchTitle = protCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -293,7 +301,7 @@ local function GetSpellName335(id)
     return name or ("Spell " .. id)
 end
 
-local UpdateActiveProtList, UpdateProtSearchResults -- Forward declarations
+local UpdateActiveProtList, UpdateProtSearchResults, SimpleTimer_After -- Forward declarations
 
 local protBtns = {}
 local activeBtns = {}
@@ -404,7 +412,7 @@ UpdateProtSearchResults = function()
             b.icon:SetTexture(iconPath or "Interface\\Icons\\INV_Misc_QuestionMark")
             b.text:SetText("|cffAAAAAA" .. id .. "|r " .. (name or "Spell "..id))
             b.actionText:SetText(isProt and "|cffff4444- |r" or "|cff44ff44+|r")
-            b.action:SetBackdropBorderColor(isProt and 0.8, 0.2, 0.2, 0.6 or 0.2, 0.8, 0.2, 0.6)
+            b.action:SetBackdropBorderColor(isProt and 0.8 or 0.2, 0.2, 0.2, 0.6)
             b:SetPoint("TOPLEFT", 0, -((y-1)*PROT_ROW_H)); b:Show()
         end
     end
@@ -412,7 +420,7 @@ UpdateProtSearchResults = function()
 end
 
 -- Delay utility for 3.3.5 (since C_Timer is nil)
-local function SimpleTimer_After(delay, func)
+SimpleTimer_After = function(delay, func)
     local f = CreateFrame("Frame")
     f.t = 0
     f:SetScript("OnUpdate", function(self, e)
@@ -452,6 +460,443 @@ end)
 
 protCard:SetScript("OnShow", function()
     UpdateActiveProtList()
+end)
+
+-- ============================================================
+-- PROTECTED FILE MANAGER (`protected_spells.txt`)
+-- ============================================================
+local protectedFileState = {
+    ids = {},
+    map = {},
+    filtered = {},
+    page = 1,
+    pageSize = 100,
+    loaded = false,
+}
+
+local function NormalizeText(text)
+    return (text or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function GetProtectedSpellName(id)
+    local name = GetSpellInfo(id)
+    return name or ("Spell " .. id)
+end
+
+local function SortNumericKeys(tbl)
+    local ids = {}
+    for id in pairs(tbl) do
+        table.insert(ids, id)
+    end
+    table.sort(ids)
+    return ids
+end
+
+local function ParseProtectedDump(raw)
+    protectedFileState.map = {}
+    if raw and raw ~= "" then
+        for token in string.gmatch(raw, "[^|]+") do
+            local id = tonumber(token)
+            if id and id > 0 then
+                protectedFileState.map[id] = true
+            end
+        end
+    end
+    protectedFileState.ids = SortNumericKeys(protectedFileState.map)
+    protectedFileState.loaded = true
+end
+
+local fileCard = CreateFrame("Frame", nil, optProtectedFilePanel)
+fileCard:SetPoint("TOPLEFT", 8, -32); fileCard:SetPoint("BOTTOMRIGHT", -8, 8)
+fileCard:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
+fileCard:SetBackdropColor(0.05, 0.057, 0.08, 0.95); fileCard:SetBackdropBorderColor(0.56, 0.47, 0.20, 0.78)
+
+local fileTitle = fileCard:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+fileTitle:SetPoint("TOPLEFT", 14, -14); fileTitle:SetText("|cffF5C842Protected Spells File|r")
+
+local fileDesc = fileCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+fileDesc:SetPoint("TOPLEFT", fileTitle, "BOTTOMLEFT", 0, -4)
+fileDesc:SetText("Review and edit `protected_spells.txt`, then export the final list back to disk.")
+fileDesc:SetTextColor(0.7, 0.7, 0.7)
+
+local fileStats = fileCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+fileStats:SetPoint("TOPLEFT", fileDesc, "BOTTOMLEFT", 0, -8)
+fileStats:SetTextColor(0.85, 0.82, 0.72)
+
+local fileSearchShell = CreateFrame("Frame", nil, fileCard)
+fileSearchShell:SetPoint("TOPLEFT", 14, -86); fileSearchShell:SetSize(260, 28)
+fileSearchShell:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
+fileSearchShell:SetBackdropColor(0.02, 0.02, 0.03, 0.95); fileSearchShell:SetBackdropBorderColor(0.30, 0.28, 0.24, 0.7)
+
+local fileSearchIcon = fileSearchShell:CreateTexture(nil, "OVERLAY")
+fileSearchIcon:SetSize(14, 14); fileSearchIcon:SetPoint("LEFT", 8, 0)
+fileSearchIcon:SetTexture("Interface\\Common\\UI-Searchbox-Icon"); fileSearchIcon:SetVertexColor(0.96, 0.82, 0.30)
+
+local fileSearch = CreateFrame("EditBox", nil, fileSearchShell)
+fileSearch:SetPoint("LEFT", fileSearchIcon, "RIGHT", 6, 0); fileSearch:SetPoint("RIGHT", -8, 0); fileSearch:SetHeight(18)
+fileSearch:SetAutoFocus(false); fileSearch:SetFontObject("ChatFontNormal"); fileSearch:SetTextColor(0.95, 0.88, 0.65)
+
+local fileSearchHint = fileSearch:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+fileSearchHint:SetPoint("LEFT", 0, 0); fileSearchHint:SetText("Search current protected list...")
+fileSearch:SetScript("OnEditFocusGained", function() fileSearchHint:Hide() end)
+fileSearch:SetScript("OnEditFocusLost", function(self) if self:GetText() == "" then fileSearchHint:Show() end end)
+fileSearch:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+local fileListBg = CreateFrame("Frame", nil, fileCard)
+fileListBg:SetPoint("TOPLEFT", 14, -120); fileListBg:SetPoint("BOTTOMRIGHT", -260, 42)
+fileListBg:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
+fileListBg:SetBackdropColor(0.01, 0.015, 0.02, 0.78); fileListBg:SetBackdropBorderColor(0.18, 0.18, 0.18, 0.6)
+
+local fileListScroll = CreateFrame("ScrollFrame", "$parentProtectedFileScroll", fileListBg, "UIPanelScrollFrameTemplate")
+fileListScroll:SetPoint("TOPLEFT", 4, -4); fileListScroll:SetPoint("BOTTOMRIGHT", -22, 4)
+local fileListContent = CreateFrame("Frame", nil, fileListScroll)
+fileListContent:SetSize(fileListScroll:GetWidth(), 1); fileListScroll:SetScrollChild(fileListContent)
+
+local sidePanel = CreateFrame("Frame", nil, fileCard)
+sidePanel:SetPoint("TOPLEFT", fileListBg, "TOPRIGHT", 10, 0); sidePanel:SetPoint("BOTTOMRIGHT", -14, 8)
+sidePanel:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
+sidePanel:SetBackdropColor(0.04, 0.045, 0.06, 0.95); sidePanel:SetBackdropBorderColor(0.56, 0.47, 0.20, 0.6)
+
+local sideTitle = sidePanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+sideTitle:SetPoint("TOPLEFT", 10, -10); sideTitle:SetText("|cffA3A3A3Add or Sync|r")
+
+local sideDesc = sidePanel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+sideDesc:SetPoint("TOPLEFT", sideTitle, "BOTTOMLEFT", 0, -3)
+sideDesc:SetPoint("RIGHT", sidePanel, "RIGHT", -10, 0)
+sideDesc:SetJustifyH("LEFT")
+sideDesc:SetText("Search the DBC for new spells only, or add a spell ID manually.")
+
+local addSearchShell = CreateFrame("Frame", nil, sidePanel)
+addSearchShell:SetPoint("TOPLEFT", 10, -42); addSearchShell:SetPoint("TOPRIGHT", -10, -42); addSearchShell:SetHeight(28)
+addSearchShell:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
+addSearchShell:SetBackdropColor(0.02, 0.02, 0.03, 0.95)
+addSearchShell:SetBackdropBorderColor(0.30, 0.28, 0.24, 0.7)
+
+local addSearchIcon = addSearchShell:CreateTexture(nil, "OVERLAY")
+addSearchIcon:SetSize(14, 14); addSearchIcon:SetPoint("LEFT", 8, 0)
+addSearchIcon:SetTexture("Interface\\Common\\UI-Searchbox-Icon"); addSearchIcon:SetVertexColor(0.96, 0.82, 0.30)
+
+local addSearch = CreateFrame("EditBox", nil, addSearchShell)
+addSearch:SetPoint("LEFT", addSearchIcon, "RIGHT", 6, 0); addSearch:SetPoint("RIGHT", -8, 0); addSearch:SetHeight(18)
+addSearch:SetAutoFocus(false); addSearch:SetFontObject("ChatFontNormal"); addSearch:SetTextColor(0.95, 0.88, 0.65)
+
+local addSearchHint = addSearch:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+addSearchHint:SetPoint("LEFT", 0, 0); addSearchHint:SetText("Search DBC by name/ID...")
+addSearch:SetScript("OnEditFocusGained", function() addSearchHint:Hide() end)
+addSearch:SetScript("OnEditFocusLost", function(self) if self:GetText() == "" then addSearchHint:Show() end end)
+addSearch:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+local searchResultsBg = CreateFrame("Frame", nil, sidePanel)
+searchResultsBg:SetPoint("TOPLEFT", addSearchShell, "BOTTOMLEFT", 0, -8)
+searchResultsBg:SetPoint("TOPRIGHT", addSearchShell, "BOTTOMRIGHT", 0, -8)
+searchResultsBg:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
+searchResultsBg:SetBackdropColor(0.03, 0.035, 0.05, 0.95); searchResultsBg:SetBackdropBorderColor(0.30, 0.28, 0.24, 0.5)
+
+local searchResultsTitle = searchResultsBg:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+searchResultsTitle:SetPoint("TOPLEFT", 8, -8)
+searchResultsTitle:SetText("Search Results")
+
+local searchResultsEmpty = searchResultsBg:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+searchResultsEmpty:SetPoint("CENTER", 0, -4)
+searchResultsEmpty:SetText("Type at least 2 letters or an ID")
+searchResultsEmpty:SetTextColor(0.55, 0.55, 0.55)
+
+local searchResultRows, protectedFileRows = {}, {}
+local PROTECTED_FILE_ROW_H = 24
+local PROTECTED_FILE_SEARCH_ROW_H = 25
+local PROTECTED_FILE_SEARCH_VISIBLE_ROWS = 5
+local ProtectedFile_RenderSearchResults
+
+local searchResultsScroll = CreateFrame("ScrollFrame", "$parentProtectedSearchScroll", searchResultsBg, "UIPanelScrollFrameTemplate")
+searchResultsScroll:SetPoint("TOPLEFT", 4, -24); searchResultsScroll:SetPoint("BOTTOMRIGHT", -24, 4)
+local searchResultsContent = CreateFrame("Frame", nil, searchResultsScroll)
+searchResultsContent:SetSize(1, 1); searchResultsScroll:SetScrollChild(searchResultsContent)
+local searchResultsScrollBar = _G[searchResultsScroll:GetName() .. "ScrollBar"]
+searchResultsScroll:EnableMouseWheel(true)
+searchResultsScroll:SetScript("OnMouseWheel", function(self, delta)
+    local current = self:GetVerticalScroll()
+    local minVal, maxVal = 0, 0
+    if searchResultsScrollBar then
+        minVal, maxVal = searchResultsScrollBar:GetMinMaxValues()
+    else
+        maxVal = math.max(0, searchResultsContent:GetHeight() - self:GetHeight())
+    end
+    local nextVal = current - (delta * PROTECTED_FILE_SEARCH_ROW_H * 2)
+    if nextVal < minVal then nextVal = minVal end
+    if nextVal > maxVal then nextVal = maxVal end
+    self:SetVerticalScroll(nextVal)
+end)
+
+local filePageLabel = fileCard:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+filePageLabel:SetPoint("BOTTOMLEFT", fileListBg, "TOPLEFT", 0, 8)
+filePageLabel:SetTextColor(0.75, 0.75, 0.75)
+
+local btnPrevPage = ns.CreateGoldenButton(nil, fileCard)
+btnPrevPage:SetPoint("BOTTOMLEFT", fileListBg, "BOTTOMLEFT", 0, -28); btnPrevPage:SetSize(70, 22); btnPrevPage:SetText("Prev")
+
+local btnNextPage = ns.CreateGoldenButton(nil, fileCard)
+btnNextPage:SetPoint("LEFT", btnPrevPage, "RIGHT", 8, 0); btnNextPage:SetSize(70, 22); btnNextPage:SetText("Next")
+
+local btnReloadFile = ns.CreateGoldenButton(nil, fileCard)
+btnReloadFile:SetParent(sidePanel)
+btnReloadFile:SetPoint("BOTTOMRIGHT", -10, 10); btnReloadFile:SetSize(100, 22); btnReloadFile:SetText("Reload File")
+
+local btnExportFile = ns.CreateGoldenButton(nil, fileCard)
+btnExportFile:SetParent(sidePanel)
+btnExportFile:SetPoint("RIGHT", btnReloadFile, "LEFT", -8, 0); btnExportFile:SetSize(100, 22); btnExportFile:SetText("Export File")
+
+local function ProtectedFile_UpdateSideLayout(showResults)
+    searchResultsBg:ClearAllPoints()
+    btnReloadFile:ClearAllPoints()
+    btnExportFile:ClearAllPoints()
+
+    if showResults then
+        searchResultsBg:SetPoint("TOPLEFT", addSearchShell, "BOTTOMLEFT", 0, -8)
+        searchResultsBg:SetPoint("TOPRIGHT", addSearchShell, "BOTTOMRIGHT", 0, -8)
+        searchResultsBg:SetPoint("BOTTOMLEFT", sidePanel, "BOTTOMLEFT", 10, 42)
+        searchResultsBg:SetPoint("BOTTOMRIGHT", sidePanel, "BOTTOMRIGHT", -10, 42)
+        searchResultsBg:Show()
+    else
+        searchResultsBg:Hide()
+        searchResultsScroll:SetVerticalScroll(0)
+    end
+
+    btnReloadFile:SetPoint("BOTTOMRIGHT", sidePanel, "BOTTOMRIGHT", -10, 10)
+    btnExportFile:SetPoint("RIGHT", btnReloadFile, "LEFT", -8, 0)
+end
+
+local function ProtectedFile_RefreshFiltered()
+    protectedFileState.ids = SortNumericKeys(protectedFileState.map)
+    wipe(protectedFileState.filtered)
+    local query = NormalizeText(fileSearch:GetText())
+    for _, id in ipairs(protectedFileState.ids) do
+        local name = NormalizeText(GetProtectedSpellName(id))
+        if query == "" or string.find(tostring(id), query, 1, true) or string.find(name, query, 1, true) then
+            table.insert(protectedFileState.filtered, id)
+        end
+    end
+    local maxPage = math.max(1, math.ceil(#protectedFileState.filtered / protectedFileState.pageSize))
+    if protectedFileState.page > maxPage then
+        protectedFileState.page = maxPage
+    end
+end
+
+local function ProtectedFile_RenderList()
+    ProtectedFile_RefreshFiltered()
+    local total = #protectedFileState.ids
+    local filtered = #protectedFileState.filtered
+    local maxPage = math.max(1, math.ceil(filtered / protectedFileState.pageSize))
+    local startIndex = ((protectedFileState.page - 1) * protectedFileState.pageSize) + 1
+    local endIndex = math.min(filtered, startIndex + protectedFileState.pageSize - 1)
+
+    for _, row in ipairs(protectedFileRows) do row:Hide() end
+
+    local visible = 0
+    for i = startIndex, endIndex do
+        local id = protectedFileState.filtered[i]
+        if id then
+            visible = visible + 1
+            local row = protectedFileRows[visible]
+            if not row then
+                row = CreateFrame("Button", nil, fileListContent)
+                row:SetSize(fileListContent:GetWidth(), PROTECTED_FILE_ROW_H)
+                row.icon = row:CreateTexture(nil, "OVERLAY")
+                row.icon:SetSize(18, 18); row.icon:SetPoint("LEFT", 4, 0)
+                row.text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0); row.text:SetPoint("RIGHT", -40, 0); row.text:SetJustifyH("LEFT")
+                row.remove = CreateFrame("Button", nil, row)
+                row.remove:SetSize(28, 18); row.remove:SetPoint("RIGHT", -4, 0)
+                row.remove:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
+                row.remove:SetBackdropColor(0.18, 0.04, 0.04, 0.85); row.remove:SetBackdropBorderColor(0.70, 0.20, 0.20, 0.8)
+                row.remove.label = row.remove:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                row.remove.label:SetPoint("CENTER"); row.remove.label:SetText("X")
+                row.remove:SetScript("OnClick", function() row:Click() end)
+                row:SetHighlightTexture("Interface\\Buttons\\WHITE8x8")
+                row:GetHighlightTexture():SetVertexColor(1, 0.92, 0.56, 0.08)
+                row:SetScript("OnClick", function(self)
+                    protectedFileState.map[self.spellID] = nil
+                    if ns.IsMorpherReady() then ns.SendMorphCommand("SPELL_PROTECTED_REMOVE:" .. self.spellID) end
+                    ProtectedFile_RenderList()
+                    ProtectedFile_RenderSearchResults()
+                    PlaySound("igMainMenuOptionCheckBoxOff")
+                end)
+                protectedFileRows[visible] = row
+            end
+
+            local name, _, icon = GetSpellInfo(id)
+            row.spellID = id
+            row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+            row.text:SetText("|cff8A8A8A" .. id .. "|r  " .. (name or ("Spell " .. id)))
+            row:SetPoint("TOPLEFT", 0, -((visible - 1) * PROTECTED_FILE_ROW_H))
+            row:Show()
+        end
+    end
+
+    fileListContent:SetHeight(math.max(1, visible * PROTECTED_FILE_ROW_H))
+    fileStats:SetText(string.format("%d total spells in file  |  %d matching  |  100 shown per page", total, filtered))
+    filePageLabel:SetText(string.format("Page %d/%d", protectedFileState.page, maxPage))
+    btnPrevPage:SetEnabled(protectedFileState.page > 1)
+    btnNextPage:SetEnabled(protectedFileState.page < maxPage)
+end
+
+local function ProtectedFile_AddSpell(id)
+    id = tonumber(id)
+    if not id or id <= 0 or protectedFileState.map[id] then return end
+    protectedFileState.map[id] = true
+    if ns.IsMorpherReady() then ns.SendMorphCommand("SPELL_PROTECTED_ADD:" .. id) end
+    ProtectedFile_RenderList()
+    ProtectedFile_RenderSearchResults()
+    PlaySound("igMainMenuOptionCheckBoxOn")
+end
+
+local function ProtectedFile_LoadFromDll()
+    if not ns.IsMorpherReady() then return end
+    ns.SendMorphCommand("SPELL_PROTECTED_DUMP")
+    SimpleTimer_After(0.1, function()
+        ParseProtectedDump(TRANSMORPHER_PROTECTED_RESULTS or "")
+        ProtectedFile_RenderList()
+    end)
+end
+
+ProtectedFile_RenderSearchResults = function()
+    for _, row in ipairs(searchResultRows) do row:Hide() end
+    local raw = TRANSMORPHER_SEARCH_RESULTS or ""
+    local shown = 0
+    local query = NormalizeText(addSearch:GetText())
+
+    if query == "" or string.len(query) < 2 then
+        searchResultsContent:SetHeight(1)
+        searchResultsEmpty:Hide()
+        searchResultsScroll:SetVerticalScroll(0)
+        ProtectedFile_UpdateSideLayout(false)
+        return
+    end
+
+    ProtectedFile_UpdateSideLayout(true)
+
+    searchResultsContent:SetWidth(math.max(1, searchResultsBg:GetWidth() - 28))
+
+    for token in string.gmatch(raw, "[^|]+") do
+        local id = tonumber(token)
+        if id and not protectedFileState.map[id] then
+            shown = shown + 1
+            local row = searchResultRows[shown]
+            if not row then
+                row = CreateFrame("Button", nil, searchResultsContent)
+                row:SetSize(math.max(1, searchResultsBg:GetWidth() - 28), 24)
+                local rowBg = row:CreateTexture(nil, "BACKGROUND"); rowBg:SetAllPoints(); row.rowBg = rowBg
+                row.icon = row:CreateTexture(nil, "OVERLAY")
+                row.icon:SetSize(18, 18); row.icon:SetPoint("LEFT", 4, 0)
+                row.text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0); row.text:SetPoint("RIGHT", -34, 0); row.text:SetJustifyH("LEFT")
+                row.action = CreateFrame("Button", nil, row)
+                row.action:SetSize(24, 18); row.action:SetPoint("RIGHT", -4, 0)
+                row.action:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8x8", edgeFile="Interface\\Buttons\\WHITE8x8", tile=true, tileSize=8, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
+                row.action:SetBackdropColor(0.08, 0.14, 0.05, 0.85); row.action:SetBackdropBorderColor(0.20, 0.65, 0.20, 0.8)
+                row.action.label = row.action:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                row.action.label:SetPoint("CENTER"); row.action.label:SetText("+")
+                row.action:SetScript("OnClick", function() row:Click() end)
+                row:SetHighlightTexture("Interface\\Buttons\\WHITE8x8")
+                row:GetHighlightTexture():SetVertexColor(1, 0.92, 0.56, 0.08)
+                row:SetScript("OnClick", function(self) ProtectedFile_AddSpell(self.spellID) end)
+                searchResultRows[shown] = row
+            end
+
+            local name, _, icon = GetSpellInfo(id)
+            row.spellID = id
+            row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+            row.text:SetText("|cff8A8A8A" .. id .. "|r  " .. (name or ("Spell " .. id)))
+            if row.rowBg then
+                if shown % 2 == 0 then row.rowBg:SetTexture(1, 1, 1, 0.03) else row.rowBg:SetTexture(0, 0, 0, 0) end
+            end
+            row:SetWidth(math.max(1, searchResultsBg:GetWidth() - 28))
+            row:SetPoint("TOPLEFT", 2, -2 - ((shown - 1) * PROTECTED_FILE_SEARCH_ROW_H))
+            row:Show()
+        end
+    end
+
+    searchResultsContent:SetHeight(math.max(1, shown * PROTECTED_FILE_SEARCH_ROW_H + 2))
+    searchResultsScroll:SetVerticalScroll(0)
+
+    if shown == 0 then
+        searchResultsEmpty:SetText("No new spells found")
+        searchResultsEmpty:Show()
+    else
+        searchResultsEmpty:Hide()
+    end
+end
+
+searchResultsBg:SetScript("OnSizeChanged", function()
+    ProtectedFile_RenderSearchResults()
+end)
+
+ProtectedFile_UpdateSideLayout(false)
+
+fileSearch:SetScript("OnTextChanged", function()
+    protectedFileState.page = 1
+    ProtectedFile_RenderList()
+end)
+
+addSearch:SetScript("OnTextChanged", function(self)
+    local query = NormalizeText(self:GetText())
+    if string.len(query) >= 2 and ns.IsMorpherReady() then
+        ns.SendMorphCommand("SPELL_SEARCH:" .. query)
+        SimpleTimer_After(0.1, ProtectedFile_RenderSearchResults)
+    else
+        TRANSMORPHER_SEARCH_RESULTS = ""
+        ProtectedFile_RenderSearchResults()
+    end
+end)
+
+btnPrevPage:SetScript("OnClick", function()
+    if protectedFileState.page > 1 then
+        protectedFileState.page = protectedFileState.page - 1
+        ProtectedFile_RenderList()
+    end
+end)
+
+btnNextPage:SetScript("OnClick", function()
+    local maxPage = math.max(1, math.ceil(#protectedFileState.filtered / protectedFileState.pageSize))
+    if protectedFileState.page < maxPage then
+        protectedFileState.page = protectedFileState.page + 1
+        ProtectedFile_RenderList()
+    end
+end)
+
+btnReloadFile:SetScript("OnClick", function()
+    if ns.IsMorpherReady() then
+        ns.SendMorphCommand("SPELL_PROTECTED_RELOAD")
+        SimpleTimer_After(0.1, function()
+            ParseProtectedDump(TRANSMORPHER_PROTECTED_RESULTS or "")
+            protectedFileState.page = 1
+            ProtectedFile_RenderList()
+        end)
+    end
+    PlaySound("gsTitleOptionOK")
+end)
+
+btnExportFile:SetScript("OnClick", function()
+    if ns.IsMorpherReady() then
+        TRANSMORPHER_PROTECTED_SAVE_OK = nil
+        ns.SendMorphCommand("SPELL_PROTECTED_SAVE")
+        SimpleTimer_After(0.1, function()
+            if TRANSMORPHER_PROTECTED_SAVE_OK == false then
+                SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Failed to export protected_spells.txt.")
+            else
+                SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Exported current protected spell list to protected_spells.txt.")
+            end
+        end)
+    end
+    PlaySound("gsTitleOptionOK")
+end)
+
+fileCard:SetScript("OnShow", function()
+    if not protectedFileState.loaded then
+        ProtectedFile_LoadFromDll()
+    else
+        ProtectedFile_RenderList()
+    end
+    ProtectedFile_RenderSearchResults()
 end)
 
 -- ============================================================
@@ -545,6 +990,14 @@ btnClear:SetScript("OnClick", function() titleSearch:SetText(""); titleSearch:Cl
 
 local btnResetTitle = ns.CreateGoldenButton("$parentResetTitle", titleTopBar)
 btnResetTitle:SetPoint("RIGHT", -8, 0); btnResetTitle:SetSize(76, 22); btnResetTitle:SetText("Reset")
+btnResetTitle:SetScript("OnClick", function()
+    if ns.IsMorpherReady() then
+        ns.SendMorphCommand("TITLE_RESET")
+        if TransmorpherCharacterState then TransmorpherCharacterState.TitleID = nil end
+        SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Title reset to original.")
+        PlaySound("gsTitleOptionOK")
+    end
+end)
 
 local titleResultCount = titleTopBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 titleResultCount:SetPoint("RIGHT", btnResetTitle, "LEFT", -8, 0)

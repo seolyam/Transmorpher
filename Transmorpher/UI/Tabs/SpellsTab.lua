@@ -85,20 +85,84 @@ local function BuildSpellPool(showAllRanks)
 end
 
 function ns.InitSpellsTab(parent)
+    local morphSubTab = CreateFrame("Frame", "$parentMorphSubTab", parent)
+    morphSubTab:SetPoint("TOPLEFT", 0, -50)
+    morphSubTab:SetPoint("BOTTOMRIGHT")
+    parent.morphSubTab = morphSubTab
+
+    local subTabBar = CreateFrame("Frame", nil, parent)
+    subTabBar:SetSize(300, 30)
+    subTabBar:SetPoint("TOPLEFT", 0, -18)
+
+    local function CreateSubTabButton(tabParent, id, text)
+        local btn = CreateFrame("Button", nil, tabParent)
+        btn:SetID(id)
+        btn:SetSize(150, 30)
+
+        local bg = btn:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetTexture(1, 1, 1, 0)
+        btn.bg = bg
+
+        local line = btn:CreateTexture(nil, "OVERLAY")
+        line:SetHeight(2)
+        line:SetPoint("BOTTOMLEFT", 15, 0)
+        line:SetPoint("BOTTOMRIGHT", -15, 0)
+        line:SetTexture(1, 0.82, 0)
+        line:Hide()
+        btn.line = line
+
+        local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        fs:SetPoint("CENTER")
+        fs:SetText(text)
+        fs:SetTextColor(0.5, 0.5, 0.5)
+        btn.fs = fs
+
+        btn.SetActive = function(self, active)
+            self.isActive = active
+            if active then
+                self.line:Show()
+                self.fs:SetTextColor(1, 1, 1)
+                self.bg:SetTexture(1, 1, 1, 0.05)
+            else
+                self.line:Hide()
+                self.fs:SetTextColor(0.5, 0.5, 0.5)
+                self.bg:SetTexture(0, 0, 0, 0)
+            end
+        end
+
+        btn:SetScript("OnEnter", function(self)
+            if not self.isActive then
+                self.fs:SetTextColor(0.9, 0.9, 0.9)
+                self.bg:SetTexture(1, 1, 1, 0.03)
+            end
+        end)
+
+        btn:SetScript("OnLeave", function(self)
+            if not self.isActive then
+                self.fs:SetTextColor(0.5, 0.5, 0.5)
+                self.bg:SetTexture(0, 0, 0, 0)
+            end
+        end)
+
+        return btn
+    end
+
+    local btnMorphs = CreateSubTabButton(subTabBar, 1, "Spell Morphs")
+    btnMorphs:SetPoint("LEFT", 0, 0)
+
     local spellPool = {}
     local filteredPool = {}
     local searchResults = {}
     local activeSourceSpellId = nil
-    
-    -- Main List Elements
-    local scroll = CreateFrame("ScrollFrame", "$parentScroll", parent, "FauxScrollFrameTemplate")
+
+    local scroll = CreateFrame("ScrollFrame", "$parentScroll", morphSubTab, "FauxScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 0, -50)
     scroll:SetPoint("BOTTOMRIGHT", -26, 10)
-    
-    -- Search UI Elements
-    local selector = CreateFrame("Frame", "TransmorpherSpellSelector", parent)
-    local searchBox -- Defined later
-    local resultScroll -- Defined later
+
+    local selector = CreateFrame("Frame", "TransmorpherSpellSelector", morphSubTab)
+    local searchBox
+    local resultScroll
 
     local function UpdateFilteredPool(q)
         q = (q or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
@@ -117,12 +181,11 @@ function ns.InitSpellsTab(parent)
         end
     end
 
-    -- Forward Declare for use in rows
     local OpenSelector
 
-    local function CreateSpellRow(p, i)
+    local function CreateSpellRow(p)
         local f = CreateFrame("Button", nil, p)
-        f:SetSize(parent:GetWidth() > 0 and (parent:GetWidth() - 40) or 500, 44)
+        f:SetSize(morphSubTab:GetWidth() > 0 and (morphSubTab:GetWidth() - 40) or 500, 44)
         f:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
         f:SetBackdrop({
             bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
@@ -155,14 +218,19 @@ function ns.InitSpellsTab(parent)
         f.actionBtn:SetSize(90, 22)
         f.actionBtn:SetPoint("RIGHT", -8, 0)
 
-        f:SetScript("OnClick", function(self) if self.data then OpenSelector(self.data) end end)
-        f.actionBtn:SetScript("OnClick", function(self) local p = self:GetParent(); if p.data then OpenSelector(p.data) end end)
+        f:SetScript("OnClick", function(self)
+            if self.data then OpenSelector(self.data) end
+        end)
+        f.actionBtn:SetScript("OnClick", function(self)
+            local pRow = self:GetParent()
+            if pRow.data then OpenSelector(pRow.data) end
+        end)
 
         return f
     end
 
     local rows = {}
-    local NUM_ROWS = math.floor((parent:GetHeight() - 60) / 46) 
+    local NUM_ROWS = math.floor((morphSubTab:GetHeight() - 60) / 46)
     if NUM_ROWS < 1 then NUM_ROWS = 10 end
     local ROW_HEIGHT = 46
 
@@ -179,10 +247,10 @@ function ns.InitSpellsTab(parent)
                 row.icon:SetTexture(data.icon)
                 row.name:SetText(data.name)
                 row.subText:SetText("ID " .. data.id .. (data.rank and data.rank ~= "" and (" · " .. data.rank) or ""))
-                
-                local targetId = ns.GetSpellMorph(data.id)
+
+                local targetId = ns.GetSpellMorph and ns.GetSpellMorph(data.id)
                 if targetId then
-                    local tName, _, tIcon = GetSpellInfo(targetId)
+                    local tName = GetSpellInfo(targetId)
                     row.assign:SetText(tName or ("Spell " .. targetId))
                     row.assign:SetTextColor(0.3, 1.0, 0.5)
                     row.actionBtn:SetText("Change")
@@ -197,19 +265,17 @@ function ns.InitSpellsTab(parent)
         end
     end
 
-    -- Setup Scroll Logic
     scroll:SetScript("OnVerticalScroll", function(self, offset)
         FauxScrollFrame_OnVerticalScroll(self, offset, ROW_HEIGHT, UpdateScroll)
     end)
 
     for i = 1, NUM_ROWS do
-        rows[i] = CreateSpellRow(parent, i) -- Parent to main container for visibility
-        rows[i]:SetPoint("TOPLEFT", 10, -50 - (i-1)*ROW_HEIGHT)
+        rows[i] = CreateSpellRow(morphSubTab)
+        rows[i]:SetPoint("TOPLEFT", 10, -50 - (i - 1) * ROW_HEIGHT)
         rows[i]:Hide()
     end
 
-    -- Build Header Filter
-    local header = CreateFrame("Frame", nil, parent)
+    local header = CreateFrame("Frame", nil, morphSubTab)
     header:SetPoint("TOPLEFT", 6, -6)
     header:SetPoint("TOPRIGHT", -26, -6)
     header:SetHeight(40)
@@ -222,25 +288,29 @@ function ns.InitSpellsTab(parent)
     header:SetBackdropColor(0.08, 0.08, 0.08, 0.95)
     header:SetBackdropBorderColor(0.35, 0.30, 0.18, 0.9)
 
+    local title = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("LEFT", 10, 0)
+    title:SetText("|cffF5C842Direct Spell Morphs|r")
+    title:SetTextColor(0.95, 0.88, 0.65)
+
     local mainSearch = CreateFrame("EditBox", nil, header)
     mainSearch:SetSize(220, 22)
     mainSearch:SetPoint("RIGHT", -10, 0)
-    mainSearch:SetBackdrop({ bgFile = "Interface\\ChatFrame\\ChatFrameBackground", edgeSize=1 })
-    mainSearch:SetBackdropColor(0,0,0,0.5)
+    mainSearch:SetBackdrop({ bgFile = "Interface\\ChatFrame\\ChatFrameBackground", edgeSize = 1 })
+    mainSearch:SetBackdropColor(0, 0, 0, 0.5)
     mainSearch:SetFontObject("ChatFontNormal")
     mainSearch:SetAutoFocus(false)
     mainSearch:SetTextInsets(8, 8, 0, 0)
     local mainSearchHint = mainSearch:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     mainSearchHint:SetPoint("LEFT", 8, 0)
     mainSearchHint:SetText("Filter spellbook...")
-    
+
     mainSearch:SetScript("OnTextChanged", function(self)
         if self:GetText() == "" then mainSearchHint:Show() else mainSearchHint:Hide() end
         UpdateFilteredPool(self:GetText())
         UpdateScroll()
     end)
 
-    -- === SELECTOR DIALOG ===
     selector:SetSize(460, 720)
     selector:SetPoint("CENTER", 0, 0)
     selector:SetFrameStrata("DIALOG")
@@ -297,7 +367,7 @@ function ns.InitSpellsTab(parent)
     local dummy = CreateFrame("Frame", nil, resultScroll)
     dummy:SetSize(1, 1)
     resultScroll:SetScrollChild(dummy)
-    -- Create a static container for the results so they don't physically scroll
+
     local resultContainer = CreateFrame("Frame", nil, selector)
     resultContainer:SetPoint("TOPLEFT", 14, -90)
     resultContainer:SetPoint("BOTTOMRIGHT", -32, 44)
@@ -330,7 +400,7 @@ function ns.InitSpellsTab(parent)
     for i = 1, RESULT_ROWS do
         local btn = CreateFrame("Button", nil, resultContainer)
         btn:SetSize(396, RESULT_HEIGHT - 1)
-        btn:SetPoint("TOPLEFT", 0, -(i-1)*RESULT_HEIGHT)
+        btn:SetPoint("TOPLEFT", 0, -(i - 1) * RESULT_HEIGHT)
         btn:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
         btn:SetBackdrop({
             bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
@@ -349,7 +419,7 @@ function ns.InitSpellsTab(parent)
         btn.text:SetJustifyH("LEFT")
         btn.didText = btn:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         btn.didText:SetPoint("RIGHT", -8, 0)
-        
+
         btn:SetScript("OnClick", function(self)
             if not activeSourceSpellId then return end
             ns.SetSpellMorph(activeSourceSpellId, self.spellId)
@@ -367,12 +437,11 @@ function ns.InitSpellsTab(parent)
 
     local pollFrame = CreateFrame("Frame")
     local function PerformSearch(query)
-        TRANSMORPHER_SEARCH_RESULTS = nil -- Clear previous
+        TRANSMORPHER_SEARCH_RESULTS = nil
         ns.SendMorphCommand("SPELL_SEARCH:" .. (query or ""))
-        
-        -- Use OnUpdate-based polling for maximum compatibility with all 3.3.5a builds
+
         local pollStart = GetTime()
-        pollFrame:SetScript("OnUpdate", function(self, elapsed)
+        pollFrame:SetScript("OnUpdate", function(self)
             local res = TRANSMORPHER_SEARCH_RESULTS
             if res or (GetTime() - pollStart > 0.2) then
                 self:SetScript("OnUpdate", nil)
@@ -402,7 +471,7 @@ function ns.InitSpellsTab(parent)
         searchBox:SetText("")
         searchHint:Show()
         searchResults = {}
-        PerformSearch("") -- Show default spells immediately
+        PerformSearch("")
         selector:Show()
         searchBox:SetFocus()
     end
@@ -435,19 +504,39 @@ function ns.InitSpellsTab(parent)
         end
     end)
 
-    parent:SetScript("OnShow", function()
+    local function RefreshMorphView()
         spellPool = BuildSpellPool(selector.showAllRanks)
         UpdateFilteredPool(mainSearch:GetText())
         UpdateScroll()
         ns.SendMorphCommand("SPELL_DBC_STATUS")
+    end
+
+    local function ShowSpellSubTab(id)
+        local showMorphs = id == 1
+
+        if showMorphs then morphSubTab:Show() else morphSubTab:Hide() end
+
+        btnMorphs:SetActive(showMorphs)
+
+        if showMorphs then
+            RefreshMorphView()
+        end
+
+        PlaySound("gsTitleOptionOK")
+    end
+
+    btnMorphs:SetScript("OnClick", function() ShowSpellSubTab(1) end)
+
+    parent.ShowSpellSubTab = ShowSpellSubTab
+
+    parent:SetScript("OnShow", function()
+        if not parent.tabInitialized then
+            ShowSpellSubTab(1)
+            parent.tabInitialized = true
+        end
     end)
 
-    -- IMMEDIATE INITIALIZATION
-    spellPool = BuildSpellPool(selector.showAllRanks)
-    UpdateFilteredPool("")
-    UpdateScroll()
-    ns.SendMorphCommand("SPELL_DBC_STATUS")
-    
+    RefreshMorphView()
     if #spellPool == 0 then
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[Transmorpher]|r Scanning spellbook... (Please wait if just logged in)")
     end
