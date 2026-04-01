@@ -1,13 +1,13 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <CustomBuild Include="C:\Users\KIRA\Desktop\stable - Copie (3) - Copie - Copie - Copie\StealthMorpher\build\CMakeFiles\022360a0d0bd7fa78addcb328a7d32f4\generate.stamp.rule">
+    <CustomBuild Include="C:\Users\KIRA\Desktop\Transmorpher Main - Copie\StealthMorpher\build\CMakeFiles\ba8030d127e2832bc531b18fab8c5b51\generate.stamp.rule">
       <Filter>CMake Rules</Filter>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="CMake Rules">
-      <UniqueIdentifier>{840A4E3B-AED4-3455-BECE-9A9CCB4A7507}</UniqueIdentifier>
+      <UniqueIdentifier>{45C586F2-D34D-37ED-A246-5911909D3D09}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

@@ -336,15 +336,15 @@ static void CaptureOriginalsFromPlayer(WowObject* p, bool force) {
     if (!p || !p->descriptors) return;
     if (!force && g_saved) return;
     uint8_t* desc = (uint8_t*)p->descriptors;
-    uint32_t currentDisp = *(uint32_t*)(desc + UNIT_FIELD_DISPLAYID);
+    // UNIT_FIELD_NATIVEDISPLAYID is offset 0x110 (index 0x44 * 4)
+    uint32_t currentDisp = *(uint32_t*)(desc + UNIT_FIELD_NATIVEDISPLAYID);
     
     // GHOST PROTECTION: Never capture originals if the player is a ghost
     // Ghost IDs: 16543 (Male), 16544 (Female).
     if (currentDisp == 16543 || currentDisp == 16544 || currentDisp == 0) return;
 
-    // FIX: Capture the CURRENT display ID (which might be a shapeshift form), 
-    // not the Native ID (which is always Human/Orc).
-    // This ensures that when we reset/unmorph, we go back to the correct form (e.g. Cat).
+    // CAPTURE BASE RACE: We always capture the NATIVE display ID (our true race)
+    // so that we never get stuck in a shapeshift form visual (Moonkin/Bear/etc).
     g_origDisplay = currentDisp;
     
     // Prevent capturing "polluted" scale while mounted
@@ -383,7 +383,8 @@ static void RefreshOriginals(WowObject* p) {
     uint8_t* desc = (uint8_t*)p->descriptors;
 
     if (g_morphDisplay == 0) {
-        uint32_t currentDisp = *(uint32_t*)(desc + UNIT_FIELD_DISPLAYID);
+        // Always refresh from NATIVE ID to prevent capturing temporary forms as originals
+        uint32_t currentDisp = *(uint32_t*)(desc + UNIT_FIELD_NATIVEDISPLAYID);
         // Only refresh if NOT a ghost
         if (currentDisp != 16543 && currentDisp != 16544 && currentDisp != 0) {
             g_origDisplay = currentDisp;
@@ -678,6 +679,19 @@ void ResetAllMorphs(bool forceClearOnly) {
     }
 }
 
+static void PushProtectedSpellResultsToLua() {
+    if (!FrameScript_Execute) return;
+    std::string res = ExportProtectedSpellIds();
+    char lCmd[32768];
+    sprintf_s(lCmd, sizeof(lCmd), "TRANSMORPHER_PROTECTED_RESULTS = '%s'", res.c_str());
+    FrameScript_Execute(lCmd, "Transmorpher", 0);
+}
+
+static void PushProtectedSaveResultToLua(bool ok) {
+    if (!FrameScript_Execute) return;
+    FrameScript_Execute(ok ? "TRANSMORPHER_PROTECTED_SAVE_OK = true" : "TRANSMORPHER_PROTECTED_SAVE_OK = false", "Transmorpher", 0);
+}
+
 bool DoMorph(const char* cmd, WowObject* player) {
     if (!player) return false;
 
@@ -953,6 +967,15 @@ bool DoMorph(const char* cmd, WowObject* player) {
             g_lastAppliedMount = 0; // Force re-evaluation after cooldown
         }
         g_luaMounted = newMounted;
+        if (newMounted == 0) {
+            uint32_t* mountField = (uint32_t*)(desc + UNIT_FIELD_MOUNTDISPLAYID);
+            *mountField = 0;
+            *(uint32_t*)((uint8_t*)player + 0x9C0) = 0;
+            g_lastAppliedMount = 0;
+            if (CGUnit_C_DismountModel) {
+                __try { CGUnit_C_DismountModel(player, 0); } __except(1) {}
+            }
+        }
         // Do NOT call UpdateDisplayInfo on dismount — the server handles it.
         // Calling it here would force a model rebuild that flashes native appearance.
         update = false;
@@ -980,6 +1003,11 @@ bool DoMorph(const char* cmd, WowObject* player) {
     }
     else if (strncmp(cmd, "SET:HIDE_ALL:", 13) == 0) {
         SetHideAllSpells(atoi(cmd + 13) > 0);
+        SpellMorph_SoftResetCache();
+        update = false;
+    }
+    else if (strncmp(cmd, "SET:SHOW_OWN_SPELLS:", 20) == 0) {
+        SetShowOwnSpells(atoi(cmd + 20) > 0);
         SpellMorph_SoftResetCache();
         update = false;
     }
@@ -1135,16 +1163,26 @@ bool DoMorph(const char* cmd, WowObject* player) {
     else if (strncmp(cmd, "TITLE:", 6) == 0) {
         uint32_t titleId = (uint32_t)atoi(cmd + 6);
         if (titleId > 0) {
-            // NO-OP: Skip if title hasn't changed
-            if (g_morphTitle == titleId) {
+            if (g_origTitle == 0) {
+                g_origTitle = *(uint32_t*)(desc + PLAYER_FIELD_CHOSEN_TITLE);
+            }
+
+            if (g_morphTitle == titleId && *(uint32_t*)(desc + PLAYER_FIELD_CHOSEN_TITLE) == titleId) {
                 return false;
             }
+
+            if (!IsTitleKnown(player, titleId)) {
+                SetTitleKnown(player, titleId, true);
+            }
+
             g_morphTitle = titleId;
             *(uint32_t*)(desc + PLAYER_FIELD_CHOSEN_TITLE) = titleId;
-            
-            char luaCmd[128];
-            sprintf_s(luaCmd, "if SetCurrentTitle then SetCurrentTitle(%u) end", titleId);
+
             if (FrameScript_Execute) {
+                char luaCmd[256];
+                sprintf_s(luaCmd,
+                    "if SetCurrentTitle then SetCurrentTitle(%u) elseif PaperDollTitleManager_SetCurrentTitle then PaperDollTitleManager_SetCurrentTitle(%u) end",
+                    titleId, titleId);
                 FrameScript_Execute(luaCmd, "Transmorpher", 0);
                 FrameScript_Execute("if PaperDollTitlesPane_Update then PaperDollTitlesPane_Update() end", "Transmorpher", 0);
             }
@@ -1152,20 +1190,24 @@ bool DoMorph(const char* cmd, WowObject* player) {
         }
     }
     else if (strncmp(cmd, "TITLE_RESET", 11) == 0) {
-        *(uint32_t*)(desc + PLAYER_FIELD_CHOSEN_TITLE) = g_origTitle;
-
-        char luaCmd[128];
-        if (g_origTitle > 0) {
-            sprintf_s(luaCmd, "if SetCurrentTitle then SetCurrentTitle(%u) end", g_origTitle);
-        } else {
-            sprintf_s(luaCmd, "if SetCurrentTitle then SetCurrentTitle(-1) end");
-        }
-        if (FrameScript_Execute) {
-            FrameScript_Execute(luaCmd, "Transmorpher", 0);
-            FrameScript_Execute("if PaperDollTitlesPane_Update then PaperDollTitlesPane_Update() end", "Transmorpher", 0);
-        }
-        
+        uint32_t restoreTitle = g_origTitle;
         g_morphTitle = 0;
+
+        if (player && player->descriptors) {
+            uint8_t* desc = (uint8_t*)player->descriptors;
+            *(uint32_t*)(desc + PLAYER_FIELD_CHOSEN_TITLE) = restoreTitle;
+
+            if (FrameScript_Execute) {
+                char luaCmd[256];
+                sprintf_s(luaCmd,
+                    "if SetCurrentTitle then SetCurrentTitle(%u) elseif PaperDollTitleManager_SetCurrentTitle then PaperDollTitleManager_SetCurrentTitle(%u) end",
+                    restoreTitle, restoreTitle);
+                FrameScript_Execute(luaCmd, "Transmorpher", 0);
+                FrameScript_Execute("if PaperDollTitlesPane_Update then PaperDollTitlesPane_Update() end", "Transmorpher", 0);
+            }
+        }
+
+        g_origTitle = 0;
         update = true;
     }
     else if (strncmp(cmd, "TIME:", 5) == 0) {
@@ -1207,6 +1249,21 @@ bool DoMorph(const char* cmd, WowObject* player) {
             RemoveSpellMorph(sourceSpellId);
         }
     }
+    else if (strncmp(cmd, "SPELL_VISUAL_PATCH:", 19) == 0) {
+        uint32_t sourceSpellId = 0;
+        uint32_t targetSpellId = 0;
+        if (sscanf_s(cmd + 19, "%u:%u", &sourceSpellId, &targetSpellId) == 2) {
+            PatchSpellVisualId(sourceSpellId, targetSpellId);
+            SpellMorph_SoftResetCache();
+        }
+    }
+    else if (strncmp(cmd, "SPELL_VISUAL_RESTORE:", 21) == 0) {
+        uint32_t sourceSpellId = (uint32_t)atoi(cmd + 21);
+        if (sourceSpellId > 0) {
+            RestoreSpellVisualId(sourceSpellId);
+            SpellMorph_SoftResetCache();
+        }
+    }
     else if (strncmp(cmd, "SPELL_SEARCH:", 13) == 0) {
         auto HandleSearch = [](const char* c) {
             if (FrameScript_Execute) {
@@ -1234,12 +1291,49 @@ bool DoMorph(const char* cmd, WowObject* player) {
         uint32_t id = (uint32_t)atoi(cmd + 17);
         SpellMorph_AddWhiteCard(id);
     }
+    else if (strcmp(cmd, "SPELL_PLAYER_BOOK_CLEAR") == 0) {
+        ClearPlayerSpellbookSpellIds();
+    }
+    else if (strncmp(cmd, "SPELL_PLAYER_BOOK_ADD:", 22) == 0) {
+        uint32_t id = (uint32_t)atoi(cmd + 22);
+        AddPlayerSpellbookSpellId(id);
+    }
     else if (strncmp(cmd, "SPELL_WHITE_REMOVE:", 19) == 0) {
         uint32_t id = (uint32_t)atoi(cmd + 19);
         SpellMorph_RemoveWhiteCard(id);
     }
     else if (strncmp(cmd, "SPELL_WHITE_CLEAR", 17) == 0) {
         SpellMorph_ClearWhiteCard();
+    }
+    else if (strcmp(cmd, "SPELL_PROTECTED_DUMP") == 0) {
+        PushProtectedSpellResultsToLua();
+    }
+    else if (strncmp(cmd, "SPELL_PROTECTED_ADD:", 20) == 0) {
+        uint32_t id = (uint32_t)atoi(cmd + 20);
+        if (id > 0) {
+            AddProtectedSpellId(id);
+        }
+    }
+    else if (strncmp(cmd, "SPELL_PROTECTED_REMOVE:", 23) == 0) {
+        uint32_t id = (uint32_t)atoi(cmd + 23);
+        if (id > 0) {
+            RemoveProtectedSpellId(id);
+        }
+    }
+    else if (strcmp(cmd, "SPELL_PROTECTED_CLEAR") == 0) {
+        ClearProtectedSpellIds();
+    }
+    else if (strcmp(cmd, "SPELL_PROTECTED_SAVE") == 0) {
+        bool ok = SaveProtectedSpellIds();
+        if (ok) {
+            ReloadProtectedSpellIds();
+            PushProtectedSpellResultsToLua();
+        }
+        PushProtectedSaveResultToLua(ok);
+    }
+    else if (strcmp(cmd, "SPELL_PROTECTED_RELOAD") == 0) {
+        ReloadProtectedSpellIds();
+        PushProtectedSpellResultsToLua();
     }
     else if (strncmp(cmd, "RESET:", 6) == 0 && cmd[6] >= '0' && cmd[6] <= '9') {
         int slot = 0;
@@ -1287,11 +1381,22 @@ bool DoMorph(const char* cmd, WowObject* player) {
         }
     }
     else if (strncmp(cmd, "RESUME", 6) == 0) {
+        bool wasSuspended = g_suspended;
         if (g_suspended) {
             g_suspended = false;
             update = true; // Only refresh when actually resuming from suspended
         }
-        // NO-OP: If already not suspended, skip (no refresh)
+
+        if (player && player->descriptors) {
+            RefreshOriginals(player);
+            if (ApplyMorphState(player)) {
+                update = true;
+            }
+        }
+
+        if (!wasSuspended && g_hasMorph) {
+            update = true;
+        }
     }
     // New Settings Commands
     else if (strncmp(cmd, "SET:DBW:", 8) == 0) {
@@ -1427,10 +1532,19 @@ void MorphGuard(WowObject* player) {
     // --- Special Form Detection ---
     uint32_t currentDisplay = *(uint32_t*)(desc + UNIT_FIELD_DISPLAYID);
     uint32_t nativeDisplay = *(uint32_t*)(desc + UNIT_FIELD_NATIVEDISPLAYID);
-    bool inSpecialForm = (currentDisplay != nativeDisplay && 
-                          currentDisplay != g_morphDisplay && 
-                          currentDisplay != 0 &&
-                          currentDisplay != 621);
+    
+    bool inSpecialForm = false;
+    bool hasActiveMorphDisplay = (g_morphDisplay > 0);
+    bool currentIsActiveMorph = hasActiveMorphDisplay && (currentDisplay == g_morphDisplay);
+    bool currentIsOriginalDisplay = (currentDisplay == g_origDisplay);
+    if (currentDisplay != nativeDisplay && !currentIsActiveMorph && !currentIsOriginalDisplay && currentDisplay != 0 && currentDisplay != 621) {
+        // We are in some non-standard form. Check if we should allow it.
+        if (currentDisplay == 25277) {
+            if (g_showMeta == 1) inSpecialForm = true; // Show Meta -> stay in special form
+        } else {
+            if (g_keepShapeshift == 0) inSpecialForm = true; // Allow forms -> stay in special form
+        }
+    }
 
     // === CHARACTER MORPH ENFORCEMENT ===
     if (!inSpecialForm) {
@@ -1628,6 +1742,14 @@ void MorphGuard(WowObject* player) {
             uint32_t currentDisp = *(uint32_t*)(desc + UNIT_FIELD_DISPLAYID);
             uint32_t curMount = *(uint32_t*)(desc + UNIT_FIELD_MOUNTDISPLAYID);
             
+            // DLL-SIDE SAFETY NET: If the game's raw mount descriptor is 0,
+            // the player is definitively not mounted. Force g_luaMounted = 0
+            // to prevent any stale Lua state from causing visual mount leaking.
+            if (curMount == 0 && g_luaMounted == 1) {
+                g_luaMounted = 0;
+                g_lastAppliedMount = 0;
+            }
+
             // GHOST PROTECTION & LEAKAGE PREVENTION
             // Skip mount morphing if the player is a ghost or if the addon says we are dismounted.
             bool skipMount = (currentDisp == 16543 || currentDisp == 16544 || g_luaMounted == 0);

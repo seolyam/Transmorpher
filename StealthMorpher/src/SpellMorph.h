@@ -16,14 +16,26 @@ void RemoveSpellMorph(uint32_t sourceSpellId);
 void ClearSpellMorphs();
 bool HasSpellMorphs();
 
+void PatchSpellVisualId(uint32_t sourceSpellId, uint32_t targetSpellId);
+void RestoreSpellVisualId(uint32_t sourceSpellId);
+
 size_t ExportSpellMorphPairs(SpellMorphPair* outPairs, size_t maxPairs);
 void ImportSpellMorphPairs(const SpellMorphPair* pairs, size_t count);
 
 std::string SearchSpells(const std::string& query);
+std::string ExportProtectedSpellIds();
+bool AddProtectedSpellId(uint32_t spellId);
+bool RemoveProtectedSpellId(uint32_t spellId);
+void ClearProtectedSpellIds();
+bool SaveProtectedSpellIds();
+void ReloadProtectedSpellIds();
+void AddPlayerSpellbookSpellId(uint32_t spellId);
+void ClearPlayerSpellbookSpellIds();
 extern size_t GetSpellDBCRecordCount();
 
 // Visibility Controls (Global & Ultra-Granular)
 void SetHideAllSpells(bool hide);
+void SetShowOwnSpells(bool show);
 void SetHidePrecast(bool hide);
 void SetHideCast(bool hide);
 void SetHideChannel(bool hide);
@@ -49,6 +61,7 @@ extern "C" {
 }
 
 bool GetHideAllSpells();
+bool GetShowOwnSpells();
 bool GetHidePrecast();
 bool GetHideCast();
 bool GetHideChannel();

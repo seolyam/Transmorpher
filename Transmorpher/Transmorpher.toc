@@ -31,7 +31,6 @@ Core\Utils.lua
 Core\DLLBridge.lua
 Core\State.lua
 Core\MountManager.lua
-
 UI\GlowSystem.lua
 UI\MainFrame.lua
 UI\DressingRoomSetup.lua

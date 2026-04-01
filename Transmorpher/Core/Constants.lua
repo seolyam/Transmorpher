@@ -250,6 +250,7 @@ ns.defaultSettings = {
     hidePaperdollButton = false,
     -- Optimization (Spell Visibility)
     hideAllSpells            = false,
+    showOwnSpells            = false,
     hidePrecast              = false,
     hideCast                 = false,
     hideChannel              = false,
