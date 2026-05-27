@@ -100,6 +100,31 @@ title:SetFont("Fonts\\FRIZQT__.TTF", 16, "OUTLINE")
 title:SetShadowColor(0, 0, 0, 0.9)
 title:SetShadowOffset(1, -1)
 
+StaticPopupDialogs["TRANSMORPHER_COMMUNITY_HUB"] = {
+    text = "Press Ctrl+C to copy the link to the Transmorpher Community Hub:",
+    button1 = "Close",
+    hasEditBox = true,
+    OnShow = function(self)
+        self.editBox:SetText("https://transmorpher-hub.vercel.app/")
+        self.editBox:HighlightText()
+        self.editBox:SetFocus()
+    end,
+    EditBoxOnEscapePressed = function(self)
+        self:GetParent():Hide()
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
+local hubButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
+hubButton:SetSize(120, 22)
+hubButton:SetPoint("LEFT", title, "RIGHT", 20, 0)
+hubButton:SetText("Community Hub")
+hubButton:SetScript("OnClick", function()
+    StaticPopup_Show("TRANSMORPHER_COMMUNITY_HUB")
+end)
+
 -- ============================================================
 -- STATUS BAR
 -- ============================================================
