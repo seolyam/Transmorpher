@@ -429,3 +429,105 @@ function ns.IsLoadoutExportString(encoded)
     return encoded:sub(1, #FORMAT_TAG) == FORMAT_TAG
         and (encoded:sub(#FORMAT_TAG + 1, #FORMAT_TAG + 1) == "|")
 end
+
+-- ============================================================
+-- SPELL MORPH PROFILE EXPORT / IMPORT CODEC (SM1)
+--
+-- Format: SM1|<name>|<sourceId>:<targetId>;<sourceId>:<targetId>;...
+--
+-- Standalone codec for spell morph profiles (direct spell-to-spell
+-- mappings stored in TransmorpherCharacterState.SpellMorphs).
+-- Import uses MERGE/UPSERT logic: existing base spell IDs are
+-- overwritten, new ones are added, unmentioned morphs are untouched.
+-- ============================================================
+
+local SM1_TAG = "SM1"
+
+function ns.SerializeSpellMorphProfile(profileName)
+    if not TransmorpherCharacterState or not TransmorpherCharacterState.SpellMorphs then
+        return nil, "no spell morphs to export"
+    end
+
+    local morphs = TransmorpherCharacterState.SpellMorphs
+    local pairs_list = {}
+    for sourceId, targetId in pairs(morphs) do
+        local src = tonumber(sourceId)
+        local tgt = tonumber(targetId)
+        if src and src > 0 and tgt and tgt > 0 then
+            pairs_list[#pairs_list + 1] = tostring(src) .. ":" .. tostring(tgt)
+        end
+    end
+
+    if #pairs_list == 0 then
+        return nil, "no active spell morphs to export"
+    end
+
+    table.sort(pairs_list)
+
+    local name = EscapeName(profileName or "Spell Morphs")
+    local morphsCsv = table.concat(pairs_list, ";")
+
+    local encoded = string.format("%s|%s|%s", SM1_TAG, name, morphsCsv)
+    return encoded, nil
+end
+
+function ns.DeserializeSpellMorphProfile(encoded)
+    if type(encoded) ~= "string" then
+        return nil, "spell morph string must be text"
+    end
+
+    encoded = encoded:match("^%s*(.-)%s*$")
+    if encoded == "" then
+        return nil, "spell morph string is empty"
+    end
+
+    -- Fix double pipes caused by WoW EditBox escaping
+    encoded = encoded:gsub("||", "|")
+
+    -- Strip trailing pipe if present
+    if encoded:sub(-1) == "|" then
+        encoded = encoded:sub(1, -2)
+    end
+
+    if encoded:sub(1, #SM1_TAG) ~= SM1_TAG then
+        return nil, "unsupported spell morph string (expected " .. SM1_TAG .. ")"
+    end
+
+    local parts = SplitPipe(encoded)
+
+    if parts[1] ~= SM1_TAG then
+        return nil, "unsupported spell morph string (expected " .. SM1_TAG .. ")"
+    end
+
+    local name = UnescapeName(parts[2] or "")
+    local morphsStr = parts[3] or ""
+
+    if morphsStr == "" then
+        return nil, "spell morph string contains no morph data"
+    end
+
+    local morphs = {}
+    local count = 0
+    for pair in string.gmatch(morphsStr, "[^;]+") do
+        local srcStr, tgtStr = pair:match("^(%d+):(%d+)$")
+        local src = tonumber(srcStr)
+        local tgt = tonumber(tgtStr)
+        if src and src > 0 and tgt and tgt > 0 then
+            morphs[src] = tgt
+            count = count + 1
+        end
+    end
+
+    if count == 0 then
+        return nil, "spell morph string contains no valid morph pairs"
+    end
+
+    return { name = name, morphs = morphs, count = count }, nil
+end
+
+function ns.IsSpellMorphProfileString(encoded)
+    if type(encoded) ~= "string" then return false end
+    encoded = encoded:match("^%s*(.-)%s*$")
+    return encoded:sub(1, #SM1_TAG) == SM1_TAG
+        and (encoded:sub(#SM1_TAG + 1, #SM1_TAG + 1) == "|")
+end

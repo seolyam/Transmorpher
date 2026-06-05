@@ -26,6 +26,9 @@ local function PrintHelp()
         "|cffffff00/morph sync|r - Force broadcast state to peers",
         "|cffffff00/morph export|r - Export selected loadout string (Ctrl+C)",
         "|cffffff00/morph import <string>|r - Import a TM1 loadout string",
+        "|cffF5C842--- Spell Morphs ---|r",
+        "|cffffff00/morph spellexport|r - Export all spell morphs as SM1 string",
+        "|cffffff00/morph spellimport <string>|r - Import an SM1 spell morph string (merge/upsert)",
         "|cffffff00/morph help|r - Show this help",
     }
     for _, line in ipairs(lines) do
@@ -269,6 +272,26 @@ SlashCmdList["Transmorpher"] = function(msg)
             ns.ShowImportLoadoutDialog()
         else
             SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Usage: /morph import <TM1 export string>")
+        end
+
+    elseif cmd == "spellexport" then
+        if ns.ShowSpellMorphExportDialog then
+            ns.ShowSpellMorphExportDialog()
+        else
+            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Open the Spells tab first.")
+        end
+
+    elseif cmd == "spellimport" then
+        if rest and rest ~= "" then
+            if ns.ImportSpellMorphFromString then
+                ns.ImportSpellMorphFromString(rest)
+            else
+                SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Open the Spells tab first.")
+            end
+        elseif ns.ShowSpellMorphImportDialog then
+            ns.ShowSpellMorphImportDialog()
+        else
+            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Usage: /morph spellimport <SM1 string>")
         end
 
     else
