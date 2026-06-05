@@ -862,3 +862,4 @@ function ns.InitSpellsTab(parent)
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[Transmorpher]|r Scanning spellbook... (Please wait if just logged in)")
     end
 end
+
