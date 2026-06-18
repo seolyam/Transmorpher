@@ -11,12 +11,54 @@ local _, classFileName = UnitClass("player")
 
 local dressingRoomBorderBackdrop = ns.Backdrops.dressingRoom
 
+-- The Character Preview is a classic DressUpModel try-on room: SetUnit("player") base
+-- (real race/skin/barber/equipped gear) optionally re-based to the active morph display,
+-- with selected items tried on top — all faked, client-side, no server morph until "Apply
+-- All". A DressUpModel natively supports TryOn/Undress (a live PlayerModel does NOT — that
+-- was why clicking an item never previewed and Undress did nothing). SyncDressingRoom does
+-- the dressing; item clicks and Undress flow straight through to the model.
 mainFrame.dressingRoom = ns.CreateDressingRoom(nil, mainFrame)
 
 do
     local dr = mainFrame.dressingRoom
     dr:SetPoint("TOPLEFT", 10, -74)
-    dr:SetSize(400, 400)
+    dr:SetPoint("BOTTOMLEFT", 10, 54)
+    dr:SetWidth(400)
+
+    local previewHeader = CreateFrame("Frame", nil, mainFrame)
+    previewHeader:SetPoint("BOTTOMLEFT", dr, "TOPLEFT", 0, 7)
+    previewHeader:SetPoint("BOTTOMRIGHT", dr, "TOPRIGHT", 0, 7)
+    previewHeader:SetHeight(28)
+    previewHeader:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Buttons\\WHITE8x8",
+        tile = true,
+        tileSize = 8,
+        edgeSize = 1,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    previewHeader:SetBackdropColor(0.045, 0.040, 0.030, 0.97)
+    previewHeader:SetBackdropBorderColor(0.78, 0.62, 0.22, 0.85)
+
+    -- Warm vertical gradient fill for depth
+    local headerGlow = previewHeader:CreateTexture(nil, "BACKGROUND")
+    headerGlow:SetPoint("TOPLEFT", 1, -1)
+    headerGlow:SetPoint("BOTTOMRIGHT", -1, 1)
+    headerGlow:SetTexture("Interface\\Buttons\\WHITE8x8")
+    headerGlow:SetGradientAlpha("VERTICAL", 0.02, 0.015, 0.005, 0.85, 0.14, 0.10, 0.03, 0.85)
+
+    -- 1px gold sheen along the very top edge
+    local headerSheen = previewHeader:CreateTexture(nil, "OVERLAY")
+    headerSheen:SetHeight(1)
+    headerSheen:SetPoint("TOPLEFT", 2, -1)
+    headerSheen:SetPoint("TOPRIGHT", -2, -1)
+    headerSheen:SetTexture("Interface\\Buttons\\WHITE8x8")
+    headerSheen:SetVertexColor(1.0, 0.90, 0.55, 0.30)
+
+    -- Centered title label sitting in the middle of the bar.
+    local headerTitle = previewHeader:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    headerTitle:SetPoint("CENTER", 0, 0)
+    headerTitle:SetText("|cffF5C842Character Preview|r")
 
     -- Outer glow (faint gold bloom behind the border)
     local outerGlow = CreateFrame("Frame", nil, dr)
@@ -29,14 +71,14 @@ do
         insets = { left = 3, right = 3, top = 3, bottom = 3 }
     })
     outerGlow:SetBackdropColor(0, 0, 0, 0)
-    outerGlow:SetBackdropBorderColor(0.85, 0.65, 0.10, 0.25)
+    outerGlow:SetBackdropBorderColor(0.92, 0.72, 0.16, 0.32)
 
     local border = CreateFrame("Frame", nil, dr)
     border:SetPoint("TOPLEFT", -2, 2)
     border:SetPoint("BOTTOMRIGHT", 2, -2)
     border:SetBackdrop(dressingRoomBorderBackdrop)
     border:SetBackdropColor(0, 0, 0, 0)
-    border:SetBackdropBorderColor(0.85, 0.70, 0.25, 0.90)
+    border:SetBackdropBorderColor(0.95, 0.78, 0.32, 0.95)
 
     -- Inner shadow (1px dark line inside for beveled depth)
     local innerShadow = dr:CreateTexture(nil, "OVERLAY", nil, 7)
@@ -142,16 +184,6 @@ do
     end
 
     dr:HookScript("OnShow", function(self) self:ShowRaceBackground() end)
-
-    local tip = dr:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    tip:SetPoint("BOTTOM", dr, "TOP", 0, 6)
-    tip:SetWidth(dr:GetWidth())
-    tip:SetJustifyH("CENTER"); tip:SetJustifyV("BOTTOM")
-    tip:SetText("\124cffC8AA6ELeft Mouse:\124r rotate  |  \124cffC8AA6ERight Mouse:\124r pan\124n\124cffC8AA6EWheel\124r or \124cffC8AA6EAlt + Right Mouse:\124r zoom")
-    tip:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
-    tip:SetTextColor(0.65, 0.60, 0.50, 0.85)
-    tip:SetShadowColor(0, 0, 0, 1)
-    tip:SetShadowOffset(1, -1)
 
     local defaultLight = {1, 0, 0, 1, 0, 1, 0.7, 0.7, 0.7, 1, 0.8, 0.8, 0.64}
     local shadowformLight = {1, 0, 0, 1, 0, 1, 0.16, 0, 0.23, 0}

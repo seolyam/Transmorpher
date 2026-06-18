@@ -35,16 +35,16 @@ local function FilterMounts(query)
     mountFilteredList = {}
     local db = ns.mountsDB or {}
     local q = (query or ""):lower()
-    
+
     for i, entry in ipairs(db) do
         local mType = entry[5] or "G"
         local matchType = (mountTypeFilter == "ALL") or (mType == mountTypeFilter) or (mType == "B")
-        
+
         if matchType then
             local name = entry[1]:lower()
             local displayID = tostring(entry[3])
             local typeName = (mType == "F" and "flying") or (mType == "B" and "both") or "ground"
-            
+
             if q == "" or name:find(q, 1, true) or typeName:find(q, 1, true) or displayID:find(q, 1, true) then
                 table.insert(mountFilteredList, { idx=i, name=entry[1], spellID=entry[2], displayID=entry[3], modelPath=entry[4], mountType=mType })
             end
@@ -74,10 +74,10 @@ local function BuildMountList()
             row = CreateFrame("Button", nil, listContent)
             row:SetSize(listContent:GetWidth() - 4, ROW_HEIGHT)
             row.bg = row:CreateTexture(nil, "BACKGROUND"); row.bg:SetAllPoints()
-            
+
             row.icon = row:CreateTexture(nil, "ARTWORK")
             row.icon:SetSize(ROW_HEIGHT-4, ROW_HEIGHT-4); row.icon:SetPoint("LEFT", 4, 0)
-            
+
             local iconBorder = row:CreateTexture(nil, "OVERLAY")
             iconBorder:SetSize(ROW_HEIGHT-2, ROW_HEIGHT-2); iconBorder:SetPoint("CENTER", row.icon)
             iconBorder:SetTexture("Interface\\Buttons\\UI-Quickslot2"); iconBorder:SetTexCoord(0.2, 0.8, 0.2, 0.8)
@@ -92,7 +92,7 @@ local function BuildMountList()
 
             row.idStr = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             row.idStr:SetPoint("RIGHT", row, "RIGHT", -10, 0)
-            
+
             mountButtons[idx] = row
         end
 
@@ -155,7 +155,7 @@ local function CreateFilterButton(text, filterVal, xOffset)
     b:SetSize(46, 18); b:SetPoint("LEFT", xOffset, 0)
     local bg = b:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetTexture(1, 1, 1, 0.05); b.bg = bg
     local txt = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); txt:SetPoint("CENTER"); txt:SetText(text); txt:SetTextColor(0.6, 0.5, 0.4); b.txt = txt
-    
+
     b:SetScript("OnClick", function()
         mountTypeFilter = filterVal
         PlaySound("gsTitleOptionOK")
@@ -243,6 +243,11 @@ local listScroll = CreateFrame("ScrollFrame", "$parentMountListScroll", listBg, 
 listScroll:SetPoint("TOPLEFT", 4, -20); listScroll:SetPoint("BOTTOMRIGHT", -22, 4)
 listContent = CreateFrame("Frame", "$parentMountListContent", listScroll)
 listContent:SetSize(listScroll:GetWidth(), 1); listScroll:SetScrollChild(listContent)
+listScroll:SetScript("OnSizeChanged", function(self, w)
+    local width = math.max(1, (w or 0) - 4)
+    listContent:SetWidth(width)
+    for _, row in ipairs(mountButtons) do row:SetWidth(math.max(1, width - 4)) end
+end)
 
 -- Bottom Buttons
 btnSetMount = ns.CreateGoldenButton("$parentBtnSetMount", mountTab)

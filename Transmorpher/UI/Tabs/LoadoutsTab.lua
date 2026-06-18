@@ -9,6 +9,25 @@ local slotOrder = ns.slotOrder
 local slotToEquipSlotId = ns.slotToEquipSlotId
 local slotTextures = ns.slotTextures or {}
 
+-- Sheath position (raw DLL code -> preview glow tooltip label). -1/nil = default.
+local SHEATHE_PREVIEW = {
+    [1] = { icon = "Interface\\Icons\\INV_Sword_27",                 label = "Back"   },
+    [3] = { icon = "Interface\\Icons\\INV_Weapon_ShortBlade_05",     label = "Hip"    },
+    [7] = { icon = "Interface\\Icons\\Spell_Magic_LesserInvisibilty",label = "Hidden" },
+}
+-- NOTE: Per-slot skin (donor retex) and color/tint/glow are intentionally NOT part of
+-- loadouts. They are character-wide live state owned by the Skin tab + DLL and are not
+-- captured, applied, previewed, or encoded here. (Weapon sheath position IS saved.)
+
+local function LoadoutSheatheInfo(loadout, slotName)
+    if slotName ~= "Main Hand" and slotName ~= "Off-hand" then return false, nil end
+    local idx = (slotName == "Main Hand") and 0 or 1
+    local v = loadout and loadout.sheathe and loadout.sheathe[idx]
+    local info = v and SHEATHE_PREVIEW[v]
+    if info then return true, info.label end
+    return false, "Default"
+end
+
 mainFrame.tabs.appearances.saved = CreateFrame("Frame", "$parentSaved", mainFrame.tabs.appearances)
 local appearancesTab = mainFrame.tabs.appearances
 local frame = appearancesTab.saved
@@ -66,11 +85,16 @@ btnAdd:SetScript("OnEnter", function() btnAddIcon:SetVertexColor(1, 0.8, 0.2) en
 btnAdd:SetScript("OnLeave", function() btnAddIcon:SetVertexColor(0.4, 0.4, 0.4) end)
 
 -- Scroll Frame for Custom List
+local BuildListFrames
 local scrollFrame = CreateFrame("ScrollFrame", "$parentScrollFrame", frame)
 scrollFrame:SetPoint("TOPLEFT", 4, -34); scrollFrame:SetPoint("BOTTOMRIGHT", -4, 36)
 local listContent = CreateFrame("Frame", "$parentContent", scrollFrame)
 listContent:SetSize(scrollFrame:GetWidth(), 1)
 scrollFrame:SetScrollChild(listContent)
+scrollFrame:SetScript("OnSizeChanged", function(self, w)
+    listContent:SetWidth(math.max(1, w or 0))
+    if BuildListFrames then BuildListFrames() end
+end)
 
 scrollFrame:EnableMouseWheel(true)
 scrollFrame:SetScript("OnMouseWheel", function(self, delta)
@@ -104,10 +128,12 @@ prevSep:SetTexture("Interface\\Buttons\\WHITE8X8"); prevSep:SetVertexColor(0.3, 
 
 local loadoutNameLabel = previewFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 loadoutNameLabel:SetPoint("LEFT", prevTitleBg, "LEFT", 14, 6); loadoutNameLabel:SetText("|cff8a7d6aNo Loadout Selected|r")
+loadoutNameLabel:SetJustifyH("LEFT"); loadoutNameLabel:SetWordWrap(false)
 local loadoutSubLabel = previewFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 loadoutSubLabel:SetPoint("TOPLEFT", loadoutNameLabel, "BOTTOMLEFT", 1, -2)
 loadoutSubLabel:SetPoint("RIGHT", prevTitleBg, "RIGHT", -104, 0)
 loadoutSubLabel:SetJustifyH("LEFT")
+loadoutSubLabel:SetWordWrap(false)
 loadoutSubLabel:SetText("Previewing appearance")
 loadoutSubLabel:SetTextColor(0.5, 0.5, 0.5)
 
@@ -122,6 +148,14 @@ btnExport:SetText("Export")
 local btnUpdate = ns.CreateGoldenButton("$parentButtonUpdate", previewFrame)
 btnUpdate:SetSize(82, 22); btnUpdate:SetPoint("RIGHT", btnExport, "LEFT", -6, 0)
 btnUpdate:SetText("Overwrite"); btnUpdate:Disable()
+
+-- Keep long loadout names from drawing under the action buttons.
+loadoutNameLabel:ClearAllPoints()
+loadoutNameLabel:SetPoint("TOPLEFT", prevTitleBg, "TOPLEFT", 14, -6)
+loadoutNameLabel:SetPoint("TOPRIGHT", btnUpdate, "TOPLEFT", -10, -6)
+loadoutSubLabel:ClearAllPoints()
+loadoutSubLabel:SetPoint("TOPLEFT", loadoutNameLabel, "BOTTOMLEFT", 1, -2)
+loadoutSubLabel:SetPoint("TOPRIGHT", loadoutNameLabel, "BOTTOMRIGHT", 0, -2)
 
 local function CreateSpecButton(parent, label, r, g, b, w)
     local bttn = CreateFrame("Button", nil, parent)
@@ -197,7 +231,7 @@ previewModel:SetScript("OnUpdate", function(self, dt)
         if self.lastX then self:SetFacing(self:GetFacing() + (x - self.lastX) * 0.02) end
         self.lastX = x
     else self.lastX = nil end
-    
+
     if math.abs(zoomTarget - zoomCurrent) > 0.01 then
         zoomCurrent = zoomCurrent + (zoomTarget - zoomCurrent) * 10 * dt
         local x,y,z = self:GetPosition(); self:SetPosition(zoomCurrent, y, z)
@@ -216,12 +250,12 @@ local function CreateSlot(name, icon, align, pY)
     s:SetSize(36, 36)
     if align == "LEFT" then s:SetPoint("TOPLEFT", 20, pY) else s:SetPoint("TOPRIGHT", -20, pY) end
     s:SetNormalTexture(icon); s:GetNormalTexture():SetTexCoord(0.1, 0.9, 0.1, 0.9)
-    
+
     local itemTex = s:CreateTexture(nil, "OVERLAY"); itemTex:SetAllPoints(); itemTex:SetTexCoord(0.08,0.92,0.08,0.92); itemTex:Hide(); s.itemTex = itemTex
     s:SetBackdrop({edgeFile="Interface\\Buttons\\WHITE8X8", edgeSize=1}); s:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
-    
+
     s.slotName = name; s:EnableMouse(true)
-    
+
     s:SetScript("OnEnter", function(self)
         self:SetBackdropBorderColor(0.8, 0.65, 0.2, 1)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -230,6 +264,12 @@ local function CreateSlot(name, icon, align, pY)
         else
             GameTooltip:SetText(self.slotName, 1, 1, 1)
             GameTooltip:AddLine("Empty Slot", 0.5, 0.5, 0.5)
+        end
+        if self.skinVisualLabel then
+            GameTooltip:AddLine(self.skinVisualLabel, 1.0, 0.35, 0.82)
+        end
+        if self.hasSheatheOverride then
+            GameTooltip:AddLine("Sheath: |cffF5C842" .. (self.sheatheLabel or "Default") .. "|r", 0.7, 0.7, 0.7)
         end
         GameTooltip:Show()
     end)
@@ -261,15 +301,15 @@ local function CreateSpecSlot(name, icon, pxOffset)
     s:SetPoint("BOTTOM", pxOffset, 68)
     s:SetNormalTexture(icon); s:GetNormalTexture():SetTexCoord(0.1, 0.9, 0.1, 0.9)
     s:SetBackdrop({edgeFile="Interface\\Buttons\\WHITE8X8", edgeSize=1}); s:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
-    
+
     local bg = s:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetTexture(0,0,0,0.8)
-    
+
     local lb = s:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); lb:SetPoint("TOP", s, "BOTTOM", 0, -2); lb:SetTextColor(0.6,0.6,0.6); lb:SetText(name); s.label = lb
-    
+
     local sl = s:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); sl:SetPoint("TOP", lb, "BOTTOM", 0, -2); sl:SetTextColor(0.8, 0.8, 0.8); sl:Hide(); s.scaleLabel = sl
-    
+
     s.slotName = name; s:EnableMouse(true)
-    
+
     s:SetScript("OnEnter", function(self)
         self:SetBackdropBorderColor(0.8, 0.65, 0.2, 1)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -302,8 +342,6 @@ local activeLookId = "CURRENT"
 local talentAutoState = {group=nil, uid=nil, t=0}
 local lastSeenTalentGroup = nil
 local loginTime = GetTime()
-local BuildListFrames
-
 local function EnsureLoadoutUid(loadout)
     if not loadout then return nil end
     if type(loadout.uid) ~= "string" or loadout.uid == "" then
@@ -415,7 +453,7 @@ local function RefreshSpecBindButtons()
 end
 
 local function CaptureCurrentLoadout(...)
-    local loadout = {items={}, hiddenSlots={}, enchantMH=nil, enchantOH=nil, mountDisplay=nil, mountHidden=false, petDisplay=nil, combatPetDisplay=nil, combatPetScale=nil, morphForm=nil, morphScale=nil, titleID=nil}
+    local loadout = {items={}, hiddenSlots={}, enchantMH=nil, enchantOH=nil, mountDisplay=nil, mountHidden=false, petDisplay=nil, combatPetDisplay=nil, combatPetScale=nil, morphForm=nil, morphScale=nil, titleID=nil, skins={}, sheathe={}}
     for index, slotName in ipairs(slotOrder) do
         local slot = mainFrame.slots[slotName]
         if slot and slot.isHiddenSlot then
@@ -440,6 +478,16 @@ local function CaptureCurrentLoadout(...)
         if TransmorpherCharacterState.Morph then loadout.morphForm = TransmorpherCharacterState.Morph; loadout.morphScale = TransmorpherCharacterState.MorphScale end
         loadout.titleID = TransmorpherCharacterState.TitleID
     end
+    -- Skins and colors are deliberately NOT captured into loadouts (character-wide
+    -- live state, owned by the Skin tab + DLL). loadout.skins stays empty.
+    -- Per-weapon sheath position (0 = Main Hand, 1 = Off-hand). Stored raw (1 Back /
+    -- 3 Hip / 7 Hidden); a missing entry means "default" so the loadout can also
+    -- reset a sheath back to natural when applied.
+    if TransmorpherCharacterState and TransmorpherCharacterState.Sheathe then
+        local sh = TransmorpherCharacterState.Sheathe
+        if sh[0] ~= nil and sh[0] ~= -1 then loadout.sheathe[0] = sh[0] end
+        if sh[1] ~= nil and sh[1] ~= -1 then loadout.sheathe[1] = sh[1] end
+    end
     return loadout
 end
 
@@ -454,6 +502,10 @@ local function UpdateLoadoutPreview(loadout)
         modelBg:SetVertexColor(0.03, 0.03, 0.03, 0.8)
         for _, s in pairs(previewSlots) do
             if s.itemTex then s.itemTex:Hide() end
+            ns.HideMorphGlow(s)
+            s.skinVisualLabel = nil
+            s.hasSheatheOverride = nil
+            s.sheatheLabel = nil
             if s.label then
                 local lbl = s.slotName
                 s.label:SetText(lbl); s.label:SetTextColor(0.6,0.6,0.6)
@@ -462,12 +514,12 @@ local function UpdateLoadoutPreview(loadout)
         end
         return
     end
-    
-    
+
+
     if loadout.isCurrent then loadoutNameLabel:SetText("|cffffd700Current Equipped Appearance|r") else loadoutNameLabel:SetText("|cffffd700"..(loadout.name or "Loadout").."|r") end
     loadoutSubLabel:SetText(GetTalentBindingSummary())
     previewModel:SetUnit("player"); previewModel:Undress()
-    
+
     local _, raceFileName = UnitRace("player")
     local raceToBgKey = {
         Human="human", NightElf="nightelf", Dwarf="dwarf", Gnome="gnome",
@@ -478,10 +530,11 @@ local function UpdateLoadoutPreview(loadout)
     if bgKey == "DEATHKNIGHT" then bgKey = "deathknight" end
     modelBg:SetTexture("Interface\\AddOns\\Transmorpher\\images\\"..bgKey)
     modelBg:SetVertexColor(0.4, 0.4, 0.4, 0.6)
-    
+
     local pending = {}
     local pendingMainHand = nil
     local pendingOffHand = nil
+    local pendingRanged = nil
     for index, slotName in ipairs(slotOrder) do
         local rawItemId = loadout.items and loadout.items[index]
         local itemId = rawItemId
@@ -496,8 +549,10 @@ local function UpdateLoadoutPreview(loadout)
                     pendingMainHand = itemId
                 elseif slotName == "Off-hand" then
                     pendingOffHand = itemId
-                elseif slotName ~= "Ranged" then
-                    table.insert(pending, itemId)
+                elseif slotName == "Ranged" then
+                    pendingRanged = itemId
+                else
+                    table.insert(pending, { itemId = itemId, slotName = slotName })
                 end
                 local _,_,_,_,_,_,_,_,_,tex = GetItemInfo(itemId)
                 if tex then s.itemTex:SetTexture(tex); s.itemTex:Show()
@@ -508,21 +563,33 @@ local function UpdateLoadoutPreview(loadout)
             else
                 s.itemTex:Hide(); s.itemId = nil
             end
+            s.skinVisualLabel = nil
+            s.hasSheatheOverride, s.sheatheLabel = LoadoutSheatheInfo(loadout, slotName)
         end
     end
-    
+
     local function DressModel()
-        for _, id in ipairs(pending) do previewModel:TryOn(id) end
-        if pendingOffHand then previewModel:TryOn(pendingOffHand) end
-        if pendingMainHand then previewModel:TryOn(pendingMainHand) end
+        for _, entry in ipairs(pending) do
+            if ns.TryOnPreviewItem then ns.TryOnPreviewItem(previewModel, entry.itemId, entry.slotName)
+            else previewModel:TryOn(entry.itemId) end
+        end
+        if pendingOffHand then
+            if ns.TryOnPreviewItem then ns.TryOnPreviewItem(previewModel, pendingOffHand, "Off-hand") else previewModel:TryOn(pendingOffHand) end
+        end
+        if pendingMainHand then
+            if ns.TryOnPreviewItem then ns.TryOnPreviewItem(previewModel, pendingMainHand, "Main Hand") else previewModel:TryOn(pendingMainHand) end
+        end
+        if pendingRanged and not pendingMainHand and not pendingOffHand then
+            if ns.TryOnPreviewItem then ns.TryOnPreviewItem(previewModel, pendingRanged, "Ranged") else previewModel:TryOn(pendingRanged) end
+        end
     end
     DressModel()
-    
+
     -- Retry uncached items
     local uc = 0
-    for _, id in ipairs(pending) do
-        local _,l = GetItemInfo(id)
-        if not l then uc = uc + 1; ns.QueryItem(id, nil) end
+    for _, entry in ipairs(pending) do
+        local _,l = GetItemInfo(entry.itemId)
+        if not l then uc = uc + 1; ns.QueryItem(entry.itemId, nil) end
     end
     if pendingOffHand then
         local _,l = GetItemInfo(pendingOffHand)
@@ -532,13 +599,17 @@ local function UpdateLoadoutPreview(loadout)
         local _,l = GetItemInfo(pendingMainHand)
         if not l then uc = uc + 1; ns.QueryItem(pendingMainHand, nil) end
     end
+    if pendingRanged then
+        local _,l = GetItemInfo(pendingRanged)
+        if not l then uc = uc + 1; ns.QueryItem(pendingRanged, nil) end
+    end
     if uc > 0 then
         local rc = 0; lookTimer.elapsed = 0
         lookTimer:SetScript("OnUpdate", function(self, dt) self.elapsed = self.elapsed + dt
             if self.elapsed >= 0.1 then self.elapsed = 0; rc = rc + 1
                 local all = true
-                for _, id in ipairs(pending) do
-                    local _,l = GetItemInfo(id)
+                for _, entry in ipairs(pending) do
+                    local _,l = GetItemInfo(entry.itemId)
                     if not l then all = false; break end
                 end
                 if all and pendingOffHand then
@@ -549,31 +620,39 @@ local function UpdateLoadoutPreview(loadout)
                     local _,l = GetItemInfo(pendingMainHand)
                     if not l then all = false end
                 end
+                if all and pendingRanged then
+                    local _,l = GetItemInfo(pendingRanged)
+                    if not l then all = false end
+                end
                 if all or rc >= 15 then DressModel(); self:Hide(); self:SetScript("OnUpdate", nil) end
             end
         end); lookTimer:Show()
     end
 
-    -- Apply glows to equipment preview slots
+    -- Apply glows to equipment preview slots. Blue means a saved weapon sheath
+    -- position; gold means a normal item in the slot. (Skins/colors are not saved.)
     for _, slotName in ipairs(slotOrder) do
         local s = previewSlots[slotName]
         if s then
-            if s.itemId and s.itemId ~= 0 then
+            local hasSheathe = select(1, LoadoutSheatheInfo(loadout, slotName))
+            if hasSheathe then
+                ns.ShowMorphGlow(s, "blue")
+            elseif s.itemId and s.itemId ~= 0 then
                 ns.ShowMorphGlow(s, "gold")
             else
                 ns.HideMorphGlow(s)
             end
         end
     end
-    
+
     -- Special labels
     local function UpdSpec(name, data, glowColor, r, g, b)
         local s = previewSlots[name]
-        if data and data > 0 then 
+        if data and data > 0 then
             s.label:SetText(data); s.label:SetTextColor(r,g,b); s.displayId = data
             ns.ShowMorphGlow(s, glowColor)
-        else 
-            s.label:SetText(s.slotName); s.label:SetTextColor(0.4,0.4,0.4); s.displayId = nil 
+        else
+            s.label:SetText(s.slotName); s.label:SetTextColor(0.4,0.4,0.4); s.displayId = nil
             ns.HideMorphGlow(s)
         end
     end
@@ -585,42 +664,42 @@ local function UpdateLoadoutPreview(loadout)
         previewSlots["Combat Pet"].scaleLabel:SetText(string.format("Scale: %g", petScale))
         previewSlots["Combat Pet"].scaleLabel:SetTextColor(1.0, 0.4, 0.4)
         previewSlots["Combat Pet"].scaleLabel:Show()
-    else 
-        previewSlots["Combat Pet"].scaleLabel:Hide() 
+    else
+        previewSlots["Combat Pet"].scaleLabel:Hide()
     end
-    
+
     UpdSpec("Morph Form", loadout.morphForm, "purple", 0.8, 0.5, 1.0)
     if loadout.morphForm and loadout.morphForm > 0 then
         local morphScale = loadout.morphScale or 1.0
         previewSlots["Morph Form"].scaleLabel:SetText(string.format("Scale: %g", morphScale))
         previewSlots["Morph Form"].scaleLabel:SetTextColor(0.8, 0.5, 1.0)
-        previewSlots["Morph Form"].scaleLabel:Show() 
-    else 
-        previewSlots["Morph Form"].scaleLabel:Hide() 
+        previewSlots["Morph Form"].scaleLabel:Show()
+    else
+        previewSlots["Morph Form"].scaleLabel:Hide()
     end
-    
-    local eMH = previewSlots["Enchant MH"]; 
-    if loadout.enchantMH and loadout.enchantMH > 0 then 
-        eMH.label:SetText(loadout.enchantMH); eMH.label:SetTextColor(0.6,1,0.6); eMH.displayId=loadout.enchantMH 
+
+    local eMH = previewSlots["Enchant MH"];
+    if loadout.enchantMH and loadout.enchantMH > 0 then
+        eMH.label:SetText(loadout.enchantMH); eMH.label:SetTextColor(0.6,1,0.6); eMH.displayId=loadout.enchantMH
         ns.ShowMorphGlow(eMH, "green")
-    else 
-        eMH.label:SetText("Enc.MH"); eMH.label:SetTextColor(0.4,0.4,0.4); eMH.displayId=nil 
+    else
+        eMH.label:SetText("Enc.MH"); eMH.label:SetTextColor(0.4,0.4,0.4); eMH.displayId=nil
         ns.HideMorphGlow(eMH)
     end
-    
-    local eOH = previewSlots["Enchant OH"]; 
-    if loadout.enchantOH and loadout.enchantOH > 0 then 
-        eOH.label:SetText(loadout.enchantOH); eOH.label:SetTextColor(0.6,1,0.6); eOH.displayId=loadout.enchantOH 
+
+    local eOH = previewSlots["Enchant OH"];
+    if loadout.enchantOH and loadout.enchantOH > 0 then
+        eOH.label:SetText(loadout.enchantOH); eOH.label:SetTextColor(0.6,1,0.6); eOH.displayId=loadout.enchantOH
         ns.ShowMorphGlow(eOH, "green")
-    else 
-        eOH.label:SetText("Enc.OH"); eOH.label:SetTextColor(0.4,0.4,0.4); eOH.displayId=nil 
+    else
+        eOH.label:SetText("Enc.OH"); eOH.label:SetTextColor(0.4,0.4,0.4); eOH.displayId=nil
         ns.HideMorphGlow(eOH)
     end
 end
 
 local function ApplyLoadout(loadout, isInitial)
     if not ns.IsMorpherReady() or not loadout or loadout.isCurrent then return end
-    
+
     ns.isApplyingLoadout = true
     ns.activeLoadoutUid = loadout.uid
 
@@ -705,10 +784,10 @@ local function ApplyLoadout(loadout, isInitial)
 
     -- Enchants MH
     local eMH = mainFrame.enchantSlots["Enchant MH"]
-    if loadout.enchantMH and loadout.enchantMH > 0 then 
+    if loadout.enchantMH and loadout.enchantMH > 0 then
         Enqueue("ENCHANT_MH:"..loadout.enchantMH)
-        local en = ns.enchantDB and ns.enchantDB[loadout.enchantMH] or tostring(loadout.enchantMH); 
-        eMH:SetEnchant(loadout.enchantMH, en); 
+        local en = ns.enchantDB and ns.enchantDB[loadout.enchantMH] or tostring(loadout.enchantMH);
+        eMH:SetEnchant(loadout.enchantMH, en);
         ns.FlashMorphSlot(eMH, "green")
     else
         Enqueue("ENCHANT_RESET_MH")
@@ -718,10 +797,10 @@ local function ApplyLoadout(loadout, isInitial)
 
     -- Enchants OH
     local eOH = mainFrame.enchantSlots["Enchant OH"]
-    if loadout.enchantOH and loadout.enchantOH > 0 then 
+    if loadout.enchantOH and loadout.enchantOH > 0 then
         Enqueue("ENCHANT_OH:"..loadout.enchantOH)
-        local en = ns.enchantDB and ns.enchantDB[loadout.enchantOH] or tostring(loadout.enchantOH); 
-        eOH:SetEnchant(loadout.enchantOH, en); 
+        local en = ns.enchantDB and ns.enchantDB[loadout.enchantOH] or tostring(loadout.enchantOH);
+        eOH:SetEnchant(loadout.enchantOH, en);
         ns.FlashMorphSlot(eOH, "green")
     else
         Enqueue("ENCHANT_RESET_OH")
@@ -818,9 +897,35 @@ local function ApplyLoadout(loadout, isInitial)
     FlushQueue()
     if didChange and ns.ScheduleDressingRoomSync then ns.ScheduleDressingRoomSync(0.05) end
     ns.UpdateSpecialSlots()
-    
+
+    -- Skins and colors are intentionally NOT part of loadouts: they are character-wide
+    -- live state owned by the Skin tab + DLL, so applying a loadout never touches the
+    -- current skin/color/glow (and never pushes any ITEM_TINT/ITEM_RETEX/PERSIST churn).
+
+    -- Per-weapon sheath position. Applying a loadout fully defines the sheath too:
+    -- a slot the loadout doesn't specify is reset to natural (-1) so an applied
+    -- loadout never inherits the previous look's sheath. The DLL persists the value
+    -- (state file) so it survives relog with no flicker.
+    do
+        TransmorpherCharacterState = TransmorpherCharacterState or {}
+        TransmorpherCharacterState.Sheathe = TransmorpherCharacterState.Sheathe or {}
+        local sh = TransmorpherCharacterState.Sheathe
+        local desired = loadout.sheathe or {}
+        for _, idx in ipairs({ 0, 1 }) do
+            local v = desired[idx]
+            if v == nil then v = -1 end
+            if v == -1 then sh[idx] = nil else sh[idx] = v end
+            ns.SendRawMorphCommand("SHEATHE:" .. idx .. ":" .. v)
+        end
+        -- Keep the per-slot sheath badge in the dressing room in sync.
+        local mh = mainFrame.slots and mainFrame.slots["Main Hand"]
+        local oh = mainFrame.slots and mainFrame.slots["Off-hand"]
+        if mh and mh.sheatheButton and mh.sheatheButton.UpdateVisuals then mh.sheatheButton:UpdateVisuals() end
+        if oh and oh.sheatheButton and oh.sheatheButton.UpdateVisuals then oh.sheatheButton:UpdateVisuals() end
+    end
+
     ns.isApplyingLoadout = false
-    
+
     -- Add flash to special slots
     local ss = mainFrame.specialSlots
     if ss then
@@ -845,12 +950,12 @@ end
 function BuildListFrames()
     local saved = _G["TransmorpherLoadoutsAccount"]
     if not saved then return end
-    
+
     for _, btn in ipairs(loadoutButtons) do btn:Hide(); btn.layoutIdx = nil end
-    
+
     local yOff = 0
     local ROW_H = 34
-    
+
     -- Current Equipped
     local curBtn = loadoutButtons[1]
     if not curBtn then
@@ -858,18 +963,18 @@ function BuildListFrames()
         curBtn:SetSize(listContent:GetWidth() - 4, ROW_H)
         curBtn:SetBackdrop({bgFile="Interface\\ChatFrame\\ChatFrameBackground", edgeFile="Interface\\Buttons\\WHITE8X8", edgeSize=1})
         curBtn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square"); curBtn:GetHighlightTexture():SetAlpha(0.1)
-        
+
         local ic = curBtn:CreateTexture(nil, "OVERLAY")
         ic:SetSize(22, 22); ic:SetPoint("LEFT", 6, 0); ic:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
         ic:SetTexCoord(0.1, 0.9, 0.1, 0.9); curBtn.icon = ic
-        
+
         local nx = curBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         nx:SetPoint("LEFT", ic, "RIGHT", 8, 0); nx:SetJustifyH("LEFT"); curBtn.nameText = nx
-        
+
         curBtn.delBtn = CreateFrame("Button", nil, curBtn)
         loadoutButtons[1] = curBtn
     end
-    
+
     curBtn:SetPoint("TOPLEFT", 2, -yOff)
     curBtn:SetBackdropColor(0.04, 0.08, 0.04, 0.8)
     curBtn:SetBackdropBorderColor(0.2, 0.6, 0.2, 1)
@@ -877,7 +982,7 @@ function BuildListFrames()
     if activeLookId == "CURRENT" then curBtn:SetBackdropBorderColor(0.4, 1.0, 0.4, 1); curBtn:SetBackdropColor(0.06, 0.15, 0.06, 0.8) end
     curBtn.delBtn:Hide()
     curBtn.icon:SetTexture("Interface\\Icons\\INV_Misc_Book_08")
-    
+
     curBtn:SetScript("OnClick", function(self)
         activeLookId = "CURRENT"
         BuildListFrames()
@@ -888,10 +993,10 @@ function BuildListFrames()
     end)
     curBtn:Show(); curBtn.layoutIdx = 0
     yOff = yOff + ROW_H + 2
-    
+
     local keys = {}
     for i, _ in ipairs(saved) do table.insert(keys, i) end
-    
+
     for i, accIdx in ipairs(keys) do
         local loadout = saved[accIdx]
         local btnIdx = i + 1
@@ -901,29 +1006,29 @@ function BuildListFrames()
             btn:SetSize(listContent:GetWidth() - 4, ROW_H)
             btn:SetBackdrop({bgFile="Interface\\ChatFrame\\ChatFrameBackground", edgeFile="Interface\\Buttons\\WHITE8X8", edgeSize=1})
             btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square"); btn:GetHighlightTexture():SetAlpha(0.1)
-            
+
             local ic = btn:CreateTexture(nil, "OVERLAY")
             ic:SetSize(22, 22); ic:SetPoint("LEFT", 6, 0)
             ic:SetTexCoord(0.1, 0.9, 0.1, 0.9); btn.icon = ic
-            
+
             local nx = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
             nx:SetPoint("LEFT", ic, "RIGHT", 8, 0); nx:SetPoint("RIGHT", -24, 0)
             nx:SetJustifyH("LEFT"); btn.nameText = nx
-            
+
             local del = CreateFrame("Button", nil, btn)
             del:SetSize(20, 20); del:SetPoint("RIGHT", -4, 0)
             local delTex = del:CreateTexture(nil, "OVERLAY"); delTex:SetAllPoints(); delTex:SetTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Up")
             del:SetHighlightTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Highlight", "ADD")
             del:Hide(); btn.delBtn = del
-            
+
             btn:SetScript("OnEnter", function() del:Show() end)
             btn:SetScript("OnLeave", function(self) if not del:IsMouseOver() then del:Hide() end end)
             del:SetScript("OnEnter", function() delTex:SetVertexColor(1, 0.2, 0.2) end)
             del:SetScript("OnLeave", function() delTex:SetVertexColor(1, 1, 1); if not btn:IsMouseOver() then del:Hide() end end)
-            
+
             loadoutButtons[btnIdx] = btn
         end
-        
+
         btn:SetPoint("TOPLEFT", 2, -yOff)
         local boundSpec = GetBoundSpecForUid(loadout.uid)
         local br, bg, bb = 0.2, 0.2, 0.2
@@ -949,9 +1054,9 @@ function BuildListFrames()
             btn:SetBackdropColor(ar, ag, ab, 0.9)
             btn:SetBackdropBorderColor(br, bg, bb, 1)
         end
-        
+
         btn.nameText:SetText("|cffffd700"..loadout.name.."|r"..tag)
-        
+
         -- Try to find chest icon (async to handle un-cached items on login)
         btn.icon:SetTexture("Interface\\Icons\\INV_Misc_Book_09")
         if loadout.items and loadout.items[4] and loadout.items[4] > 0 then
@@ -962,7 +1067,7 @@ function BuildListFrames()
                 end
             end)
         end
-        
+
         btn:SetScript("OnClick", function(self)
             local t = GetTime()
             if t - (self.lastClick or 0) < 0.3 then
@@ -976,7 +1081,7 @@ function BuildListFrames()
             self.lastClick = t
             PlaySound("gsTitleOptionOK")
         end)
-        
+
         btn.delBtn:SetScript("OnClick", function()
             local removed = _G["TransmorpherLoadoutsAccount"][accIdx]
             if removed and removed.uid then
@@ -987,13 +1092,13 @@ function BuildListFrames()
             if type(activeLookId) == "number" and activeLookId > accIdx then activeLookId = activeLookId - 1 end
             BuildListFrames()
         end)
-        
+
         btn:Show(); btn.layoutIdx = i
         yOff = yOff + ROW_H + 2
     end
-    
+
     listContent:SetHeight(math.max(1, yOff))
-    
+
     -- Ensure update and apply buttons match state
     if type(activeLookId) == "number" then
         btnUpdate:Enable()
@@ -1024,7 +1129,7 @@ local function AutoApplyTalentBoundLoadout()
     activeLookId = idx
     BuildListFrames()
     UpdateLoadoutPreview(loadout)
-    
+
     -- Always apply on actual talent-group switch.
     -- Relying on ns.activeLoadoutUid can fail after reload/login because
     -- activeLoadoutUid is runtime-only and may already match while the DLL/UI
@@ -1058,7 +1163,7 @@ listInit:SetScript("OnEvent", function(self, event, aName)
         BuildListFrames()
     elseif event == "ACTIVE_TALENT_GROUP_CHANGED" then
         local currentGroup = GetActiveTalentGroupSafe()
-        
+
         -- SUPPRESS ON LOGIN: Ignore spec detection for the first 5 seconds of login
         -- to prevent auto-applying loadouts that were already handled by the DLL or SavedVars.
         if (GetTime() - loginTime) < 5 then

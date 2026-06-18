@@ -26,9 +26,14 @@ local function PrintHelp()
         "|cffffff00/morph sync|r - Force broadcast state to peers",
         "|cffffff00/morph export|r - Export selected loadout string (Ctrl+C)",
         "|cffffff00/morph import <string>|r - Import a TM1 loadout string",
-        "|cffF5C842--- Spell Morphs ---|r",
-        "|cffffff00/morph spellexport|r - Export all spell morphs as SM1 string",
-        "|cffffff00/morph spellimport <string>|r - Import an SM1 spell morph string (merge/upsert)",
+        "|cffF5C842--- Quick Actions ---|r",
+        "|cffffff00/morph random|r - Morph into a random creature",
+        "|cffffff00/morph target|r - Morph into your target's appearance",
+        "|cffffff00/morph undo|r - Undo the last character morph",
+        "|cffffff00/morph helm|r - Toggle helm visibility",
+        "|cffffff00/morph cloak|r - Toggle cloak visibility",
+        "|cffffff00/morph ss|r - Take a screenshot",
+        "|cffffff00/morph fov <20-150>|r - Set camera FOV (0 = default)",
         "|cffffff00/morph help|r - Show this help",
     }
     for _, line in ipairs(lines) do
@@ -80,6 +85,7 @@ SlashCmdList["Transmorpher"] = function(msg)
     if cmd == "reset" then
         if ns.IsMorpherReady() then
             ns.SendMorphCommand("RESET:ALL")
+            if ns.Visuals_Clear then ns.Visuals_Clear() end
             -- Clear mount morphs
             if TransmorpherCharacterState then
                 TransmorpherCharacterState.GroundMountDisplay = nil
@@ -274,24 +280,29 @@ SlashCmdList["Transmorpher"] = function(msg)
             SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Usage: /morph import <TM1 export string>")
         end
 
-    elseif cmd == "spellexport" then
-        if ns.ShowSpellMorphExportDialog then
-            ns.ShowSpellMorphExportDialog()
-        else
-            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Open the Spells tab first.")
-        end
+    elseif cmd == "random" then
+        if ns.Enh_RandomMorph then ns.Enh_RandomMorph() end
 
-    elseif cmd == "spellimport" then
-        if rest and rest ~= "" then
-            if ns.ImportSpellMorphFromString then
-                ns.ImportSpellMorphFromString(rest)
-            else
-                SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Open the Spells tab first.")
-            end
-        elseif ns.ShowSpellMorphImportDialog then
-            ns.ShowSpellMorphImportDialog()
-        else
-            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Usage: /morph spellimport <SM1 string>")
+    elseif cmd == "target" then
+        if ns.Enh_MorphTarget then ns.Enh_MorphTarget(rest ~= "" and rest or "target") end
+
+    elseif cmd == "undo" then
+        if ns.Enh_Undo then ns.Enh_Undo() end
+
+    elseif cmd == "helm" then
+        if ns.Enh_ToggleHelm then ns.Enh_ToggleHelm() end
+
+    elseif cmd == "cloak" or cmd == "back" then
+        if ns.Enh_ToggleCloak then ns.Enh_ToggleCloak() end
+
+    elseif cmd == "ss" or cmd == "screenshot" then
+        if ns.Enh_Screenshot then ns.Enh_Screenshot() end
+
+    elseif cmd == "fov" then
+        if ns.Enh_SetFov then
+            local v = ns.Enh_SetFov(tonumber(rest) or 0)
+            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Camera FOV "
+                .. ((v and v > 0) and (v .. "\194\176") or "reset to client default") .. ".")
         end
 
     else

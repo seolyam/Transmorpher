@@ -5,7 +5,7 @@ local addon, ns = ...
 -- Centralized color palette, dimensions, slot data, race data
 -- ============================================================
 
-ns.VERSION = "2.0.0"
+ns.VERSION = "3.0.0"
 ns.ADDON_PREFIX = "Transmorpher"
 
 -- ============================================================
@@ -50,7 +50,7 @@ ns.Colors = {
 -- ============================================================
 ns.Dimensions = {
     mainWidth   = 1045,
-    mainHeight  = 528,
+    mainHeight  = 584,
     tabHeight   = 30,
     slotSize    = 40,
     slotGap     = 3,
@@ -91,6 +91,13 @@ ns.equipSlotIdToSlot = {}
 for name, id in pairs(ns.slotToEquipSlotId) do
     ns.equipSlotIdToSlot[id] = name
 end
+
+-- Morph-slot index (1..19) used by DLL item commands (ITEM / ITEM_RETEX_SLOT) is the
+-- SAME indexing as the equip-slot id above (Head=1, Shoulder=3, Chest=5, Back=15,
+-- MainHand=16, OffHand=17, Ranged=18, Tabard=19, ...). SkinTab relies on this map for
+-- slot-based skinning; it was referenced but never defined, which silently broke ALL
+-- item skins (idx=nil -> ApplySlot returned early, no command sent). Alias it here.
+ns.slotToMorphSlot = ns.slotToEquipSlotId
 
 -- Slot background textures
 ns.slotTextures = {
@@ -277,7 +284,24 @@ ns.defaultSettings = {
     maxVisiblePlayers = 0,
     showMinimapButton = true,
     hidePaperdollButton = false,
+    windowWidth = 1045,
+    windowHeight = 584,
+    -- Distance culling: make far objects "not exist" for FPS (never the local player).
+    -- hidePlayersEnabled is the master switch; the rest pick what gets culled.
+    hidePlayersEnabled       = false,   -- master
+    hidePlayersDistance      = 30,
+    hideCatPlayers           = true,    -- other players' bodies
+    hideCatPets              = true,    -- their pets / summons / totems / guardians
+    hideCatNpcs              = false,   -- all other creatures (max FPS in cities/raids)
+    hideCatObjects           = false,   -- game objects + ground AoE effects ("traces")
+    hideCatCorpses           = false,   -- corpses
+    hideShowGroup            = true,    -- never cull party/raid member character models; pets/summons can still hide
+    hideShadows              = false,   -- disable all ground/character shadows (global, FPS)
+    hideNameplates           = false,   -- hide ALL nameplates (enemy+friendly, players/NPCs/totems/pets/guardians CVars)
+    hideChatBubbles          = false,   -- hide say/yell speech bubbles (chatBubbles CVar)
+    hideOtherSounds          = false,   -- mute ONLY other players' sounds (DLL MUTE_PLAYER_SOUNDS; keeps self/NPC/UI/music)
     -- Optimization (Spell Visibility)
+    hideOtherSwing           = false,   -- hide other players' attack ANIMATION/swing (DLL SC_SWING)
     hideAllSpells            = false,
     showOwnSpells            = false,
     hidePrecast              = false,
@@ -301,6 +325,10 @@ ns.defaultSettings = {
     protectTierT7            = false,
     protectTierVOA           = false,
     whiteCardSpells          = {},
+    -- Per-character skin (donor item id + tint) keyed by slot name. Set by
+    -- the Skin sub-tab and read by loadouts / character-select doll / C++
+    -- persistent state. Mirrored to the DLL via ITEM_SKIN_PERSIST.
+    slotRecolor              = {},
 }
 
 ns.optimizationTierOptions = {

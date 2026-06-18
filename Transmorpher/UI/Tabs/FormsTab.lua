@@ -15,6 +15,12 @@ function ns.InitFormsTab(parent)
     local contentWidth = math.max(560, parent:GetWidth() - 36)
     content:SetSize(contentWidth, 1)
     scroll:SetScrollChild(content)
+    local RelayoutCards
+    scroll:SetScript("OnSizeChanged", function(self, w)
+        local width = math.max(560, (w or 0) - 4)
+        content:SetWidth(width)
+        if RelayoutCards then RelayoutCards(width) end
+    end)
 
     -- Header bar
     local header = CreateFrame("Frame", nil, content)
@@ -132,6 +138,9 @@ function ns.InitFormsTab(parent)
     local resultList = CreateFrame("Frame", nil, resultScroll)
     resultList:SetSize(396, 1)
     resultScroll:SetScrollChild(resultList)
+    resultScroll:SetScript("OnSizeChanged", function(self, w)
+        resultList:SetWidth(math.max(1, (w or 0) - 4))
+    end)
 
     -- Bottom buttons
     local btnReset = ns.CreateGoldenButton("$parentReset", selector)
@@ -370,8 +379,8 @@ function ns.InitFormsTab(parent)
         end
     end
 
-    local cols = contentWidth >= 740 and 3 or 2
     local gapX, gapY = 10, 10
+    local cols = contentWidth >= 740 and 3 or 2
     local cardWidth = math.floor((contentWidth - 12 - ((cols - 1) * gapX)) / cols)
     local cardHeight = 92
     local startY = -56
@@ -514,8 +523,28 @@ function ns.InitFormsTab(parent)
         end
     end
 
-    local totalRows = row + (col > 0 and 1 or 0)
-    content:SetHeight(56 + totalRows * (cardHeight + gapY) + 10)
+    RelayoutCards = function(width)
+        width = math.max(560, width or content:GetWidth() or contentWidth)
+        local newCols = math.floor((width - 12 + gapX) / 240)
+        if newCols < 2 then newCols = 2 end
+        if newCols > 4 then newCols = 4 end
+        local newCardWidth = math.floor((width - 12 - ((newCols - 1) * gapX)) / newCols)
+        for i, card in ipairs(slotCards) do
+            local idx = i - 1
+            local r = math.floor(idx / newCols)
+            local c = idx - r * newCols
+            card:ClearAllPoints()
+            card:SetSize(newCardWidth, cardHeight)
+            card:SetPoint("TOPLEFT", 6 + c * (newCardWidth + gapX), startY - r * (cardHeight + gapY))
+        end
+        local totalRows = math.ceil(#slotCards / newCols)
+        local neededHeight = 56 + totalRows * (cardHeight + gapY) + 10
+        content:SetHeight(math.max(neededHeight, (scroll:GetHeight() or 1)))
+    end
+    RelayoutCards(content:GetWidth())
 
-    parent:SetScript("OnShow", function() RefreshAllCards() end)
+    parent:SetScript("OnShow", function()
+        RelayoutCards(content:GetWidth())
+        RefreshAllCards()
+    end)
 end

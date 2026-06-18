@@ -9,6 +9,35 @@ local mainFrame = ns.mainFrame
 mainFrame.slots = {}
 mainFrame.selectedSlot = nil
 
+local previewSyncBatchDepth = 0
+local previewSyncPending = false
+
+local function SchedulePreviewSync(delay)
+    if mainFrame.dressingRoom then
+        mainFrame.dressingRoom.forceNextSync = true
+        mainFrame.dressingRoom.suppressSyncUntil = nil
+    end
+    if previewSyncBatchDepth > 0 then
+        previewSyncPending = true
+        return
+    end
+    if ns.SyncDressingRoom then ns.SyncDressingRoom()
+    elseif ns.ScheduleDressingRoomSync then ns.ScheduleDressingRoomSync(0) end
+end
+
+local function BeginPreviewSyncBatch()
+    previewSyncBatchDepth = previewSyncBatchDepth + 1
+end
+
+local function EndPreviewSyncBatch()
+    if previewSyncBatchDepth <= 0 then return end
+    previewSyncBatchDepth = previewSyncBatchDepth - 1
+    if previewSyncBatchDepth == 0 and previewSyncPending then
+        previewSyncPending = false
+        SchedulePreviewSync(0)
+    end
+end
+
 local function slot_OnShiftLeftClick(self)
     if self.itemId then
         local _, link = GetItemInfo(self.itemId)
@@ -60,7 +89,7 @@ local function slot_OnLeftClick(self)
             end
             if found then break end
         end
-        mainFrame.dressingRoom:TryOn(self.itemId)
+        SchedulePreviewSync(0.02)
     end
     self:LockHighlight()
 end
@@ -152,8 +181,7 @@ local function slot_RemoveItem(self)
             self.textures.empty:Show(); self.textures.item:Hide()
         end
         self:GetScript("OnEnter")(self)
-        if ns.ScheduleDressingRoomSync then ns.ScheduleDressingRoomSync(0.05)
-        elseif ns.SyncDressingRoom then ns.SyncDressingRoom() end
+        SchedulePreviewSync(0)
     end
 end
 
@@ -177,7 +205,10 @@ local function slot_SetItem(self, itemId)
     self.textures.empty:Hide()
     self.textures.item:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
     self.textures.item:Show()
-    mainFrame.dressingRoom:TryOn(itemId)
+    -- Always route preview through the ordered dressing-room rebuild. Direct additive
+    -- TryOn calls are fragile for weapons (especially 1H/off-hand) and can race item
+    -- cache retries, leaving the model empty or with weapons on the wrong hand.
+    SchedulePreviewSync(0.02)
     ns.QueryItem(itemId, function(queriedItemId, success)
         if queriedItemId == self.itemId then
             if success then
@@ -186,7 +217,7 @@ local function slot_SetItem(self, itemId)
                 self.textures.empty:Hide()
                 self.textures.item:SetTexture(texture or "Interface\\Icons\\INV_Misc_QuestionMark")
                 self.textures.item:Show()
-                mainFrame.dressingRoom:TryOn(queriedItemId)
+                SchedulePreviewSync(0.02)
             else
                 self.loadFailed = true
                 self.textures.empty:Hide()
@@ -222,8 +253,7 @@ for slotName, texturePath in pairs(ns.slotTextures) do
                 if didChange then
                     local equipSlotId = ns.slotToEquipSlotId[self.slotName]
                     if equipSlotId ~= 16 and equipSlotId ~= 17 and equipSlotId ~= 18 then
-                        if ns.ScheduleDressingRoomSync then ns.ScheduleDressingRoomSync(0.05)
-                        elseif ns.SyncDressingRoom then ns.SyncDressingRoom() end
+                        SchedulePreviewSync(0.05)
                     end
                 end
             else
@@ -270,17 +300,29 @@ slots["Ranged"]:SetPoint("LEFT", slots["Off-hand"], "RIGHT", 4, 0)
 -- ============================================================
 local defaultSlot = "Head"
 
+local function EndHiddenPreviewSyncLater(target)
+    if not target or not target.EndHiddenPreviewSync then return end
+    local function finish()
+        if target and target.EndHiddenPreviewSync then target:EndHiddenPreviewSync() end
+    end
+    if ns.RunAfter then ns.RunAfter(0.65, finish) else finish() end
+end
+
 local function btnReset_Hook()
-    mainFrame.dressingRoom:Undress()
+    local keepLive = mainFrame.dressingRoom.IsLiveMode and mainFrame.dressingRoom:IsLiveMode()
+    if keepLive and mainFrame.dressingRoom.BeginHiddenPreviewSync then
+        mainFrame.dressingRoom:BeginHiddenPreviewSync()
+    end
+    BeginPreviewSyncBatch()
     for _, slot in pairs(mainFrame.slots) do
         if slot.slotName == ns.rangedSlot and ("DRUIDSHAMANPALADINDEATHKNIGHT"):find(ns.playerClass) then
             if not slot.isMorphed then slot:RemoveItem() end
         else slot:Reset() end
     end
-    for _, slot in pairs(mainFrame.slots) do
-        if slot.itemId then mainFrame.dressingRoom:TryOn(slot.itemId) end
-    end
+    SchedulePreviewSync(0.02)
+    EndPreviewSyncBatch()
     if mainFrame.dressingRoom.shadowformEnabled then mainFrame.dressingRoom:EnableShadowform() end
+    if keepLive then EndHiddenPreviewSyncLater(mainFrame.dressingRoom) end
 end
 
 local function btnUndress_Hook()
@@ -293,15 +335,11 @@ end
 
 local function dressingRoom_OnShow(self)
     self:Reset()
-    local hasMorphed = false
-    for _, slot in pairs(mainFrame.slots) do
-        if slot.isMorphed and slot.morphedItemId then hasMorphed = true; break end
-    end
-    self:Undress()
-    for _, slot in pairs(mainFrame.slots) do
-        if slot.itemId then self:TryOn(slot.itemId) end
-    end
+    local keepLive = self.IsLiveMode and self:IsLiveMode()
+    if keepLive and self.BeginHiddenPreviewSync then self:BeginHiddenPreviewSync() end
+    SchedulePreviewSync(0.02)
     if self.shadowformEnabled then self:EnableShadowform() end
+    if keepLive then EndHiddenPreviewSyncLater(self) end
 end
 
 mainFrame.slots[defaultSlot]:SetScript("OnShow", function(self)
@@ -312,4 +350,5 @@ mainFrame.slots[defaultSlot]:SetScript("OnShow", function(self)
     btnReset_Hook()
     mainFrame.buttons.undress:HookScript("OnClick", btnUndress_Hook)
     self:Click("LeftButton")
+    if mainFrame.dressingRoom.ShowLive then mainFrame.dressingRoom:ShowLive() end
 end)

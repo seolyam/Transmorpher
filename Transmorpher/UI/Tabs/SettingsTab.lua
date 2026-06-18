@@ -3,14 +3,19 @@ local addon, ns = ...
 local mainFrame = ns.mainFrame
 local settingsTab = mainFrame.tabs.settings
 local _, classFileName = UnitClass("player")
+local SETTINGS_CONTENT_H = 852
 
 local scrollFrame = CreateFrame("ScrollFrame", "$parentSettingsScroll", settingsTab, "UIPanelScrollFrameTemplate")
 scrollFrame:SetPoint("TOPLEFT", 8, -8)
 scrollFrame:SetPoint("BOTTOMRIGHT", -28, 8)
 
 local scrollChild = CreateFrame("Frame", nil, scrollFrame)
-scrollChild:SetSize(scrollFrame:GetWidth(), 794)
+scrollChild:SetSize(scrollFrame:GetWidth(), SETTINGS_CONTENT_H)
 scrollFrame:SetScrollChild(scrollChild)
+scrollFrame:SetScript("OnSizeChanged", function(self, w, h)
+    scrollChild:SetWidth(math.max(1, (w or 0) - 4))
+    scrollChild:SetHeight(math.max(SETTINGS_CONTENT_H, h or self:GetHeight() or 1))
+end)
 
 local function applyCardStyle(card)
     card:SetBackdrop({
@@ -42,7 +47,8 @@ end
 local function createCard(parent, title, y, height)
     local card = CreateFrame("Frame", nil, parent)
     card:SetPoint("TOPLEFT", 10, y)
-    card:SetSize(parent:GetWidth() - 20, height)
+    card:SetPoint("TOPRIGHT", -10, y)
+    card:SetHeight(height)
     applyCardStyle(card)
 
     local titleText = card:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -65,7 +71,8 @@ end
 local function createCheckboxRow(parent, label, settingKey, y, tooltip, onToggle)
     local row = CreateFrame("Frame", nil, parent)
     row:SetPoint("TOPLEFT", 12, y)
-    row:SetSize(parent:GetWidth() - 24, 34)
+    row:SetPoint("TOPRIGHT", -12, y)
+    row:SetHeight(34)
 
     local rowBg = row:CreateTexture(nil, "BACKGROUND")
     rowBg:SetTexture("Interface\\Buttons\\WHITE8x8")

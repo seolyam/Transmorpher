@@ -16,14 +16,15 @@ do
         if self.timer > 0 then return end
         self:Hide()
         self.timer = 0
-        if mainFrame and mainFrame.dressingRoom and ns.SyncDressingRoom then
-            ns.SyncDressingRoom()
+        if mainFrame and mainFrame.dressingRoom and ns.ScheduleDressingRoomSync then
+            ns.ScheduleDressingRoomSync(0.01)
         elseif mainFrame and mainFrame.dressingRoom then
             mainFrame.dressingRoom:SetUnit("player")
+            if mainFrame.dressingRoom.ShowLive then mainFrame.dressingRoom:ShowLive() end
         end
     end)
     ns.UpdatePreviewModel = function()
-        f.timer = 0.5
+        f.timer = 0.08
         f:Show()
     end
 end
@@ -32,12 +33,17 @@ local UpdatePreviewModel = ns.UpdatePreviewModel
 
 do
     local actualMorphTab = mainFrame.tabs.morph
+    local LayoutMorphDynamic
     local scrollFrame = CreateFrame("ScrollFrame", "$parentScrollFrame", actualMorphTab, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", 0, -4); scrollFrame:SetPoint("BOTTOMRIGHT", -28, 4)
 
     local morphTab = CreateFrame("Frame", "$parentContent", scrollFrame)
-    morphTab:SetSize(actualMorphTab:GetWidth()-30, 1100)
+    morphTab:SetSize(1, 1320)
     scrollFrame:SetScrollChild(morphTab)
+    scrollFrame:SetScript("OnSizeChanged", function(self, w)
+        morphTab:SetWidth(math.max(1, (w or 0) - 4))
+        if LayoutMorphDynamic then LayoutMorphDynamic() end
+    end)
 
     local yOff = -16
 
@@ -46,6 +52,46 @@ do
     titleText:SetPoint("TOPLEFT", 12, yOff); titleText:SetText("|cffF5C842Character Morph|r"); yOff = yOff - 24
     local subtitleText = morphTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     subtitleText:SetPoint("TOPLEFT", 12, yOff); subtitleText:SetText("|cff998866Change your character model. Client-side only.|r"); yOff = yOff - 24
+
+    -- ============================================================
+    -- QUICK ACTIONS & VIEW (Enhancements feature pack)
+    -- ============================================================
+    local function MakeTip(btn, title, body)
+        btn:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(title, 1, 0.82, 0)
+            if body then GameTooltip:AddLine(body, 0.8, 0.8, 0.8, true) end
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
+
+    local qaLabel = morphTab:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    qaLabel:SetPoint("TOPLEFT", 10, yOff); qaLabel:SetText("|cffF5C842Quick Actions|r"); yOff = yOff - 20
+
+    local btnRandom = ns.CreateGoldenButton("$parentBtnRandomMorph", morphTab)
+    btnRandom:SetSize(108, 22); btnRandom:SetPoint("TOPLEFT", 12, yOff); btnRandom:SetText("|cffF5C842Random|r")
+    btnRandom:SetScript("OnClick", function() if ns.Enh_RandomMorph then ns.Enh_RandomMorph() end end)
+    MakeTip(btnRandom, "Random Morph", "Morph into a random creature display.")
+
+    local btnTarget = ns.CreateGoldenButton("$parentBtnMorphTarget", morphTab)
+    btnTarget:SetSize(108, 22); btnTarget:SetPoint("LEFT", btnRandom, "RIGHT", 6, 0); btnTarget:SetText("|cffF5C842Copy Target|r")
+    btnTarget:SetScript("OnClick", function() if ns.Enh_MorphTarget then ns.Enh_MorphTarget("target") end end)
+    MakeTip(btnTarget, "Copy Target", "Morph into your current target's appearance.")
+
+    local btnUndo = ns.CreateGoldenButton("$parentBtnUndoMorph", morphTab)
+    btnUndo:SetSize(108, 22); btnUndo:SetPoint("LEFT", btnTarget, "RIGHT", 6, 0); btnUndo:SetText("|cffF5C842Undo|r")
+    btnUndo:SetScript("OnClick", function() if ns.Enh_Undo then ns.Enh_Undo() end end)
+    MakeTip(btnUndo, "Undo", "Revert to the previous character morph.")
+    yOff = yOff - 30
+
+    -- ("Appearance & View" row — Toggle Helm/Cloak/Screenshot — and the Camera FOV
+    -- slider were removed from here. FOV now lives in Misc > Atmosphere. Helm/Cloak
+    -- toggles are available via the per-slot eye buttons; screenshot via the game key.)
+
+    local qaSep = morphTab:CreateTexture(nil, "ARTWORK")
+    qaSep:SetHeight(1); qaSep:SetPoint("TOPLEFT", 12, yOff); qaSep:SetPoint("TOPRIGHT", -20, yOff); qaSep:SetTexture(1, 1, 1, 0.08)
+    yOff = yOff - 10
 
     -- Race Display IDs (from Constants.lua)
     local raceDisplayIds = ns.raceDisplayIds
@@ -99,7 +145,9 @@ do
     customDesc:SetPoint("TOPLEFT", 10, yOff); customDesc:SetText("|cff998866Search by creature name or enter a display ID directly:|r"); yOff = yOff - 22
 
     local searchContainer = CreateFrame("Frame", nil, morphTab)
-    searchContainer:SetSize(370, 28); searchContainer:SetPoint("TOPLEFT", 10, yOff)
+    searchContainer:SetPoint("TOPLEFT", 10, yOff)
+    searchContainer:SetPoint("TOPRIGHT", -120, yOff)
+    searchContainer:SetHeight(28)
     searchContainer:SetBackdrop({
         bgFile="Interface\\ChatFrame\\ChatFrameBackground",
         edgeFile="Interface\\Buttons\\WHITE8X8",
@@ -114,7 +162,9 @@ do
     searchIcon:SetTexture("Interface\\Common\\UI-Searchbox-Icon"); searchIcon:SetVertexColor(0.80, 0.65, 0.22)
 
     local editBox = CreateFrame("EditBox", "$parentMorphIdInput", searchContainer)
-    editBox:SetSize(310, 18); editBox:SetPoint("LEFT", searchIcon, "RIGHT", 4, 0)
+    editBox:SetPoint("LEFT", searchIcon, "RIGHT", 4, 0)
+    editBox:SetPoint("RIGHT", -24, 0)
+    editBox:SetHeight(18)
     editBox:SetAutoFocus(false); editBox:SetMaxLetters(40)
     editBox:SetFont("Fonts\\FRIZQT__.TTF", 11); editBox:SetTextColor(0.95, 0.88, 0.65)
 
@@ -131,7 +181,9 @@ do
 
     -- Search results dropdown
     local searchDropBg = CreateFrame("Frame", "$parentMorphSearchDrop", actualMorphTab)
-    searchDropBg:SetPoint("TOPLEFT", searchContainer, "BOTTOMLEFT", 0, 2); searchDropBg:SetSize(370, 1)
+    searchDropBg:SetPoint("TOPLEFT", searchContainer, "BOTTOMLEFT", 0, 2)
+    searchDropBg:SetPoint("TOPRIGHT", searchContainer, "BOTTOMRIGHT", 0, 2)
+    searchDropBg:SetHeight(1)
     searchDropBg:SetBackdrop({
         bgFile="Interface\\ChatFrame\\ChatFrameBackground",
         edgeFile="Interface\\Buttons\\WHITE8X8",
@@ -166,6 +218,9 @@ do
     searchDropScroll:SetPoint("TOPLEFT", 4, -4); searchDropScroll:SetPoint("BOTTOMRIGHT", -22, 4)
     local searchDropContent = CreateFrame("Frame", "$parentMorphSearchDropContent", searchDropScroll)
     searchDropContent:SetSize(searchDropScroll:GetWidth(), 1); searchDropScroll:SetScrollChild(searchDropContent)
+    searchDropScroll:SetScript("OnSizeChanged", function(self, w)
+        searchDropContent:SetWidth(math.max(1, (w or 0) - 4))
+    end)
 
     local SEARCH_ROW_H, MAX_SEARCH_ROWS = 20, 10
     local searchResultButtons = {}
@@ -315,7 +370,9 @@ do
     yOff = yOff - 26
 
     local favListBg = CreateFrame("Frame", "$parentFavListBg", morphTab)
-    favListBg:SetPoint("TOPLEFT", 10, yOff); favListBg:SetSize(480, 100)
+    favListBg:SetPoint("TOPLEFT", 10, yOff)
+    favListBg:SetPoint("TOPRIGHT", -10, yOff)
+    favListBg:SetHeight(100)
     favListBg:SetBackdrop({
         bgFile="Interface\\ChatFrame\\ChatFrameBackground",
         edgeFile="Interface\\Buttons\\WHITE8X8",
@@ -329,6 +386,9 @@ do
     favScroll:SetPoint("TOPLEFT", 4, -4); favScroll:SetPoint("BOTTOMRIGHT", -22, 4)
     local favContent = CreateFrame("Frame", "$parentFavContent", favScroll)
     favContent:SetSize(favScroll:GetWidth(), 1); favScroll:SetScrollChild(favContent)
+    favScroll:SetScript("OnSizeChanged", function(self, w)
+        favContent:SetWidth(math.max(1, (w or 0) - 4))
+    end)
 
     local favButtons, favSelectedIdx = {}, nil
 
@@ -403,6 +463,8 @@ do
 
     local popularCreatures = ns.popularCreatures
 
+    local popularStartY = yOff
+    local popularButtons = {}
     col = 0; local creatureRow = 0
     for i, creature in ipairs(popularCreatures) do
         local btn = ns.CreateGoldenButton("$parentCreature"..i, morphTab)
@@ -420,6 +482,7 @@ do
         end)
         btn:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:AddLine(creature.name); GameTooltip:AddLine("Display ID: "..creature.id,1,1,1); GameTooltip:Show() end)
         btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        popularButtons[i] = btn
         col = col + 1; if col >= 4 then col = 0; creatureRow = creatureRow + 1 end
     end
     yOff = yOff - math.ceil(#popularCreatures / 4) * (btnHeight+3) - 10
@@ -431,14 +494,40 @@ do
     btnResetMorph:SetScript("OnClick", function()
         if ns.IsMorpherReady() then
             ns.SendMorphCommand("MORPH:0|SCALE:0")
+            if ns.Skin_ResetAll then ns.Skin_ResetAll(true) end
+            if ns.Barber_Reset then ns.Barber_Reset(true) end  -- also wipe barber look + colors
+            if TransmorpherCharacterState then
+                TransmorpherCharacterState.Sheathe = {}
+            end
+            ns.SendRawMorphCommand("SHEATHE:0:-1|SHEATHE:1:-1")
             if TransmorpherCharacterState then TransmorpherCharacterState.Morph = nil; TransmorpherCharacterState.MorphScale = nil; TransmorpherCharacterState.Scale = nil end
             UpdatePreviewModel(); ns.UpdateSpecialSlots()
-            
+
             if ns.BroadcastMorphState then ns.BroadcastMorphState(true) end
-            
+
             SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: Character morph reset!")
         end; PlaySound("gsTitleOptionOK")
     end)
 
     morphTab:SetScript("OnShow", function() infoLabel:SetText("|cff8a7d6aDisplay info not available in stealth mode.|r") end)
+
+    LayoutMorphDynamic = function()
+        local width = morphTab:GetWidth() or 520
+        local cols = math.floor((width - 20 + 5) / (btnWidth + 5))
+        if cols < 4 then cols = 4 end
+        if cols > 7 then cols = 7 end
+        for i, btn in ipairs(popularButtons) do
+            local idx = i - 1
+            local r = math.floor(idx / cols)
+            local c = idx - r * cols
+            btn:ClearAllPoints()
+            btn:SetPoint("TOPLEFT", 10 + c * (btnWidth + 5), popularStartY - r * (btnHeight + 3))
+        end
+        local rows = math.ceil(#popularButtons / cols)
+        local resetY = popularStartY - rows * (btnHeight + 3) - 10
+        btnResetMorph:ClearAllPoints()
+        btnResetMorph:SetPoint("TOPLEFT", 10, resetY)
+        morphTab:SetHeight(math.max((scrollFrame:GetHeight() or 1) + 8, -resetY + 54))
+    end
+    LayoutMorphDynamic()
 end

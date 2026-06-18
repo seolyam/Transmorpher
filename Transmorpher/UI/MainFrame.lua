@@ -11,16 +11,53 @@ table.insert(UISpecialFrames, mainFrame:GetName())
 -- Shared dropdown frame for EasyMenu
 ns.dropDownFrame = CreateFrame("Frame", "TransmorpherDropDown", mainFrame, "UIDropDownMenuTemplate")
 
-mainFrame:SetWidth(ns.Dimensions.mainWidth)
-mainFrame:SetHeight(ns.Dimensions.mainHeight)
+local MIN_MAIN_W = ns.Dimensions.mainWidth
+local MIN_MAIN_H = ns.Dimensions.mainHeight
+local settings = ns.GetSettings and ns.GetSettings()
+local savedW = settings and tonumber(settings.windowWidth) or MIN_MAIN_W
+local savedH = settings and tonumber(settings.windowHeight) or MIN_MAIN_H
+if savedW < MIN_MAIN_W then savedW = MIN_MAIN_W end
+if savedH < MIN_MAIN_H then savedH = MIN_MAIN_H end
+
+mainFrame:SetWidth(savedW)
+mainFrame:SetHeight(savedH)
 mainFrame:SetPoint("CENTER")
 mainFrame:Hide()
 mainFrame:SetMovable(true)
 mainFrame:SetClampedToScreen(true)
+if mainFrame.SetResizable then
+    mainFrame:SetResizable(true)
+    if mainFrame.SetMinResize then mainFrame:SetMinResize(MIN_MAIN_W, MIN_MAIN_H) end
+    if mainFrame.SetMaxResize and UIParent then
+        mainFrame:SetMaxResize(math.max(MIN_MAIN_W, (UIParent:GetWidth() or MIN_MAIN_W) - 20), math.max(MIN_MAIN_H, (UIParent:GetHeight() or MIN_MAIN_H) - 20))
+    end
+end
 mainFrame:EnableMouse(true)
 mainFrame:RegisterForDrag("LeftButton")
 mainFrame:SetScript("OnDragStart", mainFrame.StartMoving)
 mainFrame:SetScript("OnDragStop", mainFrame.StopMovingOrSizing)
+
+local function SaveMainFrameSize()
+    local s = ns.GetSettings and ns.GetSettings()
+    if not s then return end
+    s.windowWidth = math.floor((mainFrame:GetWidth() or MIN_MAIN_W) + 0.5)
+    s.windowHeight = math.floor((mainFrame:GetHeight() or MIN_MAIN_H) + 0.5)
+end
+
+local resizeGrip = CreateFrame("Button", "$parentResizeGrip", mainFrame)
+resizeGrip:SetSize(18, 18)
+resizeGrip:SetPoint("BOTTOMRIGHT", -2, 2)
+resizeGrip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+resizeGrip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+resizeGrip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight", "ADD")
+resizeGrip:SetScript("OnMouseDown", function()
+    if mainFrame.StartSizing then mainFrame:StartSizing("BOTTOMRIGHT") end
+end)
+resizeGrip:SetScript("OnMouseUp", function()
+    mainFrame:StopMovingOrSizing()
+    SaveMainFrameSize()
+end)
+mainFrame.resizeGrip = resizeGrip
 
 mainFrame:SetScript("OnShow", function()
     PlaySound("igCharacterInfoOpen")
@@ -51,10 +88,15 @@ mainFrame:SetScript("OnShow", function()
         ns.UpdateMorphStatusBar()
     end
 end)
-mainFrame:SetScript("OnHide", function() PlaySound("igCharacterInfoClose") end)
+mainFrame:SetScript("OnHide", function()
+    if ns.Skin_ClosePopups then ns.Skin_ClosePopups() end
+    if _G["TM_SheatheFlyout"] and _G["TM_SheatheFlyout"].Hide then _G["TM_SheatheFlyout"]:Hide() end
+    if _G["TransmorpherLoadoutStringDialog"] and _G["TransmorpherLoadoutStringDialog"].Hide then _G["TransmorpherLoadoutStringDialog"]:Hide() end
+    PlaySound("igCharacterInfoClose")
+end)
 
 -- ============================================================
--- MAIN FRAME BACKGROUND & BORDER (Retail Flat Style)
+-- MAIN FRAME BACKGROUND & BORDER (dark premium gold shell)
 -- ============================================================
 mainFrame:SetBackdrop({
     bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
@@ -62,8 +104,8 @@ mainFrame:SetBackdrop({
     tile = false, tileSize = 0, edgeSize = 2,
     insets = { left = 2, right = 2, top = 2, bottom = 2 }
 })
-mainFrame:SetBackdropColor(0.04, 0.04, 0.04, 0.98)
-mainFrame:SetBackdropBorderColor(0.55, 0.45, 0.15, 0.75)
+mainFrame:SetBackdropColor(0.035, 0.030, 0.024, 0.985)
+mainFrame:SetBackdropBorderColor(0.82, 0.62, 0.16, 0.95)
 
 -- Optional drop shadow (fake)
 local shadow = mainFrame:CreateTexture(nil, "BACKGROUND", nil, -1)
@@ -78,7 +120,7 @@ titleSep:SetTexture("Interface\\ChatFrame\\ChatFrameBackground")
 titleSep:SetPoint("TOPLEFT", 1, -30)
 titleSep:SetPoint("TOPRIGHT", -1, -30)
 titleSep:SetHeight(1)
-titleSep:SetVertexColor(0.2, 0.2, 0.2, 1)
+titleSep:SetVertexColor(0.58, 0.43, 0.12, 0.85)
 
 -- Main Vertical Separator (left side for preview, right side for tabs)
 local separatorV = mainFrame:CreateTexture(nil, "BORDER")
@@ -86,7 +128,14 @@ separatorV:SetTexture("Interface\\ChatFrame\\ChatFrameBackground")
 separatorV:SetPoint("TOPLEFT", 410, -30)
 separatorV:SetPoint("BOTTOMLEFT", 410, 8)
 separatorV:SetWidth(1)
-separatorV:SetVertexColor(0.2, 0.2, 0.2, 1)
+separatorV:SetVertexColor(0.52, 0.39, 0.12, 0.75)
+
+local topSheen = mainFrame:CreateTexture(nil, "BORDER")
+topSheen:SetTexture("Interface\\Buttons\\WHITE8x8")
+topSheen:SetPoint("TOPLEFT", 3, -3)
+topSheen:SetPoint("TOPRIGHT", -3, -3)
+topSheen:SetHeight(1)
+topSheen:SetVertexColor(1.0, 0.86, 0.36, 0.38)
 
 -- ============================================================
 -- TITLE BAR
@@ -111,10 +160,10 @@ stats:SetBackdrop({
     tile = false, tileSize = 0, edgeSize = 1,
     insets = { left = 0, right = 0, top = 0, bottom = 0 }
 })
-stats:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
-stats:SetBackdropBorderColor(0.2, 0.2, 0.2, 1)
+stats:SetBackdropColor(0.045, 0.038, 0.028, 0.95)
+stats:SetBackdropBorderColor(0.48, 0.36, 0.12, 0.85)
 stats:SetPoint("BOTTOMLEFT", 415, 8)
-stats:SetPoint("BOTTOMRIGHT", -6, 8)
+stats:SetPoint("BOTTOMRIGHT", -24, 8)
 stats:SetHeight(24)
 
 mainFrame.morphStatus = stats:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -148,7 +197,7 @@ stats:SetScript("OnEnter", function(self)
         local mountEntry = s.MountName or (s.MountDisplay and s.MountDisplay > 0 and ("ID " .. s.MountDisplay))
         if not mountEntry and (s.GroundMountDisplay or s.FlyingMountDisplay) then
              -- Fallback for legacy data
-             mountEntry = s.MountName or s.GroundMountName or s.FlyingMountName or 
+             mountEntry = s.MountName or s.GroundMountName or s.FlyingMountName or
                           (s.GroundMountDisplay and s.GroundMountDisplay > 0 and ("ID " .. s.GroundMountDisplay)) or
                           (s.FlyingMountDisplay and s.FlyingMountDisplay > 0 and ("ID " .. s.FlyingMountDisplay))
         end
@@ -220,7 +269,7 @@ mainFrame.buttons.close = close
 -- ============================================================
 -- TAB SYSTEM
 -- ============================================================
-local TAB_NAMES = {"Preview", "Loadouts", "Mounts", "Pets", "CPets", "Morph", "Misc", "Settings"}
+local TAB_NAMES = {"Preview", "Loadouts", "Mounts", "Pets", "CPets", "Morph", "Misc", "Color", "Settings"}
 mainFrame.tabs = {}
 mainFrame.tabContents = {}
 
@@ -228,25 +277,49 @@ do
     local tabs = {}
     local selectedTabIdx = 1
     local TAB_AREA_LEFT = 412
-    local TAB_AREA_RIGHT = ns.Dimensions.mainWidth - 10
+    local TAB_AREA_RIGHT_PAD = 10
     local TAB_COUNT = #TAB_NAMES
     local TAB_H = 26
-    local TAB_W = math.floor((TAB_AREA_RIGHT - TAB_AREA_LEFT) / TAB_COUNT)
     local TAB_TOP = -30
+
+    local function LayoutMainTabs()
+        local totalW = (mainFrame:GetWidth() or MIN_MAIN_W) - TAB_AREA_LEFT - TAB_AREA_RIGHT_PAD
+        local tabW = math.floor(totalW / TAB_COUNT)
+        if tabW < 48 then tabW = 48 end
+
+        for i = 1, TAB_COUNT do
+            local tabBtn = mainFrame.buttons["tab"..i]
+            if tabBtn then
+                tabBtn:ClearAllPoints()
+                tabBtn:SetHeight(TAB_H)
+                if i == 1 then
+                    tabBtn:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", TAB_AREA_LEFT, TAB_TOP)
+                else
+                    tabBtn:SetPoint("LEFT", mainFrame.buttons["tab"..(i-1)], "RIGHT", 0, 0)
+                end
+                if i == TAB_COUNT then
+                    tabBtn:SetPoint("RIGHT", mainFrame, "RIGHT", -TAB_AREA_RIGHT_PAD, 0)
+                else
+                    tabBtn:SetWidth(tabW)
+                end
+            end
+        end
+    end
+    mainFrame.LayoutMainTabs = LayoutMainTabs
 
     local function UpdateTabAppearance()
         for i = 1, TAB_COUNT do
             local tabBtn = mainFrame.buttons["tab"..i]
             if i == selectedTabIdx then
-                tabBtn.bg:SetTexture(0.12, 0.10, 0.07, 1)
+                tabBtn.bg:SetTexture(0.13, 0.095, 0.035, 1)
                 tabBtn.topLine:Show()
                 tabBtn.botLine:Hide()
                 tabBtn:GetFontString():SetTextColor(0.96, 0.78, 0.26, 1)
             else
-                tabBtn.bg:SetTexture(0.06, 0.05, 0.04, 0.95)
+                tabBtn.bg:SetTexture(0.055, 0.045, 0.032, 0.95)
                 tabBtn.topLine:Hide()
                 tabBtn.botLine:Show()
-                tabBtn:GetFontString():SetTextColor(0.55, 0.50, 0.40, 1)
+                tabBtn:GetFontString():SetTextColor(0.62, 0.55, 0.40, 1)
             end
         end
     end
@@ -316,7 +389,7 @@ do
         local btn = CreateFrame("Button", "$parentTab"..i, mainFrame)
         mainFrame.buttons["tab"..i] = btn
         btn:SetID(i)
-        btn:SetSize(TAB_W, TAB_H)
+        btn:SetSize(64, TAB_H)
 
         if i == 1 then
             btn:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", TAB_AREA_LEFT, TAB_TOP)
@@ -328,7 +401,7 @@ do
         end
 
         local bg = btn:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints(); bg:SetTexture(0.06, 0.05, 0.04, 0.95)
+        bg:SetAllPoints(); bg:SetTexture(0.055, 0.045, 0.032, 0.95)
         btn.bg = bg
 
         local topLine = btn:CreateTexture(nil, "OVERLAY")
@@ -340,14 +413,14 @@ do
         local botLine = btn:CreateTexture(nil, "OVERLAY")
         botLine:SetHeight(1)
         botLine:SetPoint("BOTTOMLEFT"); botLine:SetPoint("BOTTOMRIGHT")
-        botLine:SetTexture(0.35, 0.28, 0.14, 0.6)
+        botLine:SetTexture(0.48, 0.35, 0.12, 0.65)
         btn.botLine = botLine
 
         if i > 1 then
             local sep = btn:CreateTexture(nil, "OVERLAY")
             sep:SetWidth(1)
             sep:SetPoint("TOPLEFT", 0, -3); sep:SetPoint("BOTTOMLEFT", 0, 3)
-            sep:SetTexture(0.3, 0.25, 0.15, 0.4)
+            sep:SetTexture(0.48, 0.35, 0.12, 0.45)
         end
 
         local htex = btn:CreateTexture(nil, "HIGHLIGHT")
@@ -356,7 +429,7 @@ do
 
         local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         fs:SetPoint("CENTER"); fs:SetText(TAB_NAMES[i])
-        fs:SetTextColor(0.55, 0.50, 0.40, 1)
+        fs:SetTextColor(0.62, 0.55, 0.40, 1)
         btn:SetFontString(fs)
 
         btn:SetScript("OnClick", tab_OnClick)
@@ -367,6 +440,23 @@ do
         frame:Hide()
         table.insert(tabs, frame)
     end
+
+    LayoutMainTabs()
+    local enforcingMinimumSize = false
+    mainFrame:SetScript("OnSizeChanged", function(self)
+        if enforcingMinimumSize then return end
+        local width = self:GetWidth() or MIN_MAIN_W
+        local height = self:GetHeight() or MIN_MAIN_H
+        local targetW = width < MIN_MAIN_W and MIN_MAIN_W or width
+        local targetH = height < MIN_MAIN_H and MIN_MAIN_H or height
+        if targetW ~= width or targetH ~= height then
+            enforcingMinimumSize = true
+            self:SetSize(targetW, targetH)
+            enforcingMinimumSize = false
+        end
+        LayoutMainTabs()
+        SaveMainFrameSize()
+    end)
 
     -- Select first tab
     tab_OnClick(mainFrame.buttons["tab1"])
@@ -380,6 +470,7 @@ do
     mainFrame.tabs.morph      = tabs[6]
     mainFrame.tabs.misc       = tabs[7]
     mainFrame.tabs.env        = tabs[7]
-    mainFrame.tabs.settings   = tabs[8]
+    mainFrame.tabs.color      = tabs[8]
+    mainFrame.tabs.settings   = tabs[9]
     mainFrame.tabContents     = tabs
 end

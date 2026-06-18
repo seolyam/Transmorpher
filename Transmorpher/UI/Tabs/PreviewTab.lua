@@ -27,23 +27,35 @@ local spellsSubTab = CreateFrame("Frame", "$parentSpellsSubTab", mainFrame.tabs.
 spellsSubTab:SetPoint("TOPLEFT", 0, -50); spellsSubTab:SetPoint("BOTTOMRIGHT"); spellsSubTab:Hide()
 mainFrame.tabs.preview.spellsSubTab = spellsSubTab
 
+local skinSubTab = CreateFrame("Frame", "$parentSkinSubTab", mainFrame.tabs.preview)
+skinSubTab:SetPoint("TOPLEFT", 0, -50); skinSubTab:SetPoint("BOTTOMRIGHT"); skinSubTab:Hide()
+mainFrame.tabs.preview.skinSubTab = skinSubTab
+
+local barberSubTab = CreateFrame("Frame", "$parentBarberSubTab", mainFrame.tabs.preview)
+barberSubTab:SetPoint("TOPLEFT", 0, -50); barberSubTab:SetPoint("BOTTOMRIGHT"); barberSubTab:Hide()
+mainFrame.tabs.preview.barberSubTab = barberSubTab
+
+local visualsSubTab = CreateFrame("Frame", "$parentVisualsSubTab", mainFrame.tabs.preview)
+visualsSubTab:SetPoint("TOPLEFT", 0, -50); visualsSubTab:SetPoint("BOTTOMRIGHT"); visualsSubTab:Hide()
+mainFrame.tabs.preview.visualsSubTab = visualsSubTab
+
 -- Sub-tab Buttons
 local subTabBar = CreateFrame("Frame", nil, mainFrame.tabs.preview)
-subTabBar:SetSize(360, 30); subTabBar:SetPoint("TOPLEFT", 0, -20)
+subTabBar:SetPoint("TOPLEFT", 0, -20); subTabBar:SetPoint("TOPRIGHT", 0, -20); subTabBar:SetHeight(30)
 
 local function CreateSubTabButton(parent, id, text)
-    local btn = CreateFrame("Button", nil, parent); btn:SetID(id); btn:SetSize(90, 30)
+    local btn = CreateFrame("Button", nil, parent); btn:SetID(id); btn:SetSize(77, 30)
     local bg = btn:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetTexture(1,1,1,0); btn.bg = bg
     local line = btn:CreateTexture(nil, "OVERLAY"); line:SetHeight(2)
     line:SetPoint("BOTTOMLEFT", 15, 0); line:SetPoint("BOTTOMRIGHT", -15, 0)
-    line:SetTexture(1, 0.82, 0); line:Hide(); btn.line = line
-    local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal"); fs:SetPoint("CENTER"); fs:SetText(text); fs:SetTextColor(0.5,0.5,0.5); btn.fs = fs
+    line:SetTexture(1.00, 0.82, 0.24); line:Hide(); btn.line = line
+    local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal"); fs:SetPoint("CENTER"); fs:SetText(text); fs:SetTextColor(0.58,0.52,0.40); btn.fs = fs
     btn.SetActive = function(self, active) self.isActive = active
-        if active then self.line:Show(); self.fs:SetTextColor(1,1,1); self.bg:SetTexture(1,1,1,0.05)
-        else self.line:Hide(); self.fs:SetTextColor(0.5,0.5,0.5); self.bg:SetTexture(0,0,0,0) end
+        if active then self.line:Show(); self.fs:SetTextColor(1.00,0.86,0.38); self.bg:SetTexture(1.00,0.76,0.22,0.06)
+        else self.line:Hide(); self.fs:SetTextColor(0.58,0.52,0.40); self.bg:SetTexture(0,0,0,0) end
     end
-    btn:SetScript("OnEnter", function(self) if not self.isActive then self.fs:SetTextColor(0.9,0.9,0.9); self.bg:SetTexture(1,1,1,0.03) end end)
-    btn:SetScript("OnLeave", function(self) if not self.isActive then self.fs:SetTextColor(0.5,0.5,0.5); self.bg:SetTexture(0,0,0,0) end end)
+    btn:SetScript("OnEnter", function(self) if not self.isActive then self.fs:SetTextColor(0.88,0.76,0.48); self.bg:SetTexture(1.00,0.76,0.22,0.035) end end)
+    btn:SetScript("OnLeave", function(self) if not self.isActive then self.fs:SetTextColor(0.58,0.52,0.40); self.bg:SetTexture(0,0,0,0) end end)
     return btn
 end
 
@@ -51,22 +63,53 @@ local btnItems = CreateSubTabButton(subTabBar, 1, "Items"); btnItems:SetPoint("L
 local btnSets = CreateSubTabButton(subTabBar, 2, "Sets"); btnSets:SetPoint("LEFT", btnItems, "RIGHT", 0, 0)
 local btnForms = CreateSubTabButton(subTabBar, 3, "Forms"); btnForms:SetPoint("LEFT", btnSets, "RIGHT", 0, 0)
 local btnSpells = CreateSubTabButton(subTabBar, 4, "Spells"); btnSpells:SetPoint("LEFT", btnForms, "RIGHT", 0, 0)
+local btnSkin = CreateSubTabButton(subTabBar, 5, "Skin"); btnSkin:SetPoint("LEFT", btnSpells, "RIGHT", 0, 0)
+local btnBarber = CreateSubTabButton(subTabBar, 6, "Barber"); btnBarber:SetPoint("LEFT", btnSkin, "RIGHT", 0, 0)
+local btnVisuals = CreateSubTabButton(subTabBar, 7, "Auras"); btnVisuals:SetPoint("LEFT", btnBarber, "RIGHT", 0, 0)
+local previewSubTabButtons = { btnItems, btnSets, btnForms, btnSpells, btnSkin, btnBarber, btnVisuals }
+
+local function LayoutPreviewSubTabs()
+    local width = subTabBar:GetWidth() or 0
+    if width <= 0 then return end
+    local buttonWidth = math.floor(width / #previewSubTabButtons)
+    if buttonWidth < 58 then buttonWidth = 58 end
+    for i, button in ipairs(previewSubTabButtons) do
+        button:ClearAllPoints()
+        button:SetWidth(buttonWidth)
+        if i == 1 then
+            button:SetPoint("LEFT", subTabBar, "LEFT", 0, 0)
+        else
+            button:SetPoint("LEFT", previewSubTabButtons[i - 1], "RIGHT", 0, 0)
+        end
+    end
+end
+subTabBar:SetScript("OnSizeChanged", LayoutPreviewSubTabs)
+LayoutPreviewSubTabs()
 
 local function ShowPreviewSubTab(id)
     local showItems = id == 1
     local showSets = id == 2
     local showForms = id == 3
     local showSpells = id == 4
+    local showSkin = id == 5
+    local showBarber = id == 6
+    local showVisuals = id == 7
 
     if showItems then itemsSubTab:Show() else itemsSubTab:Hide() end
     if showSets then setsSubTab:Show() else setsSubTab:Hide() end
     if showForms then formsSubTab:Show() else formsSubTab:Hide() end
     if showSpells then spellsSubTab:Show() else spellsSubTab:Hide() end
+    if showSkin then skinSubTab:Show() else skinSubTab:Hide() end
+    if showBarber then barberSubTab:Show() else barberSubTab:Hide() end
+    if showVisuals then visualsSubTab:Show() else visualsSubTab:Hide() end
 
     btnItems:SetActive(showItems)
     btnSets:SetActive(showSets)
     btnForms:SetActive(showForms)
     btnSpells:SetActive(showSpells)
+    btnSkin:SetActive(showSkin)
+    btnBarber:SetActive(showBarber)
+    btnVisuals:SetActive(showVisuals)
 
     if showSets and not setsSubTab.initialized then
         if ns.InitSetsTab then ns.InitSetsTab(setsSubTab); setsSubTab.initialized = true end
@@ -77,6 +120,15 @@ local function ShowPreviewSubTab(id)
     if showSpells and not spellsSubTab.initialized then
         if ns.InitSpellsTab then ns.InitSpellsTab(spellsSubTab); spellsSubTab.initialized = true end
     end
+    if showSkin and not skinSubTab.initialized then
+        if ns.InitSkinTab then ns.InitSkinTab(skinSubTab); skinSubTab.initialized = true end
+    end
+    if showBarber and not barberSubTab.initialized then
+        if ns.InitBarberTab then ns.InitBarberTab(barberSubTab); barberSubTab.initialized = true end
+    end
+    if showVisuals and not visualsSubTab.initialized then
+        if ns.InitVisualsTab then ns.InitVisualsTab(visualsSubTab); visualsSubTab.initialized = true end
+    end
 
     PlaySound("gsTitleOptionOK")
 end
@@ -84,6 +136,9 @@ btnItems:SetScript("OnClick", function() ShowPreviewSubTab(1) end)
 btnSets:SetScript("OnClick", function() ShowPreviewSubTab(2) end)
 btnForms:SetScript("OnClick", function() ShowPreviewSubTab(3) end)
 btnSpells:SetScript("OnClick", function() ShowPreviewSubTab(4) end)
+btnSkin:SetScript("OnClick", function() ShowPreviewSubTab(5) end)
+btnBarber:SetScript("OnClick", function() ShowPreviewSubTab(6) end)
+btnVisuals:SetScript("OnClick", function() ShowPreviewSubTab(7) end)
 mainFrame.tabs.preview.ShowSubTab = ShowPreviewSubTab
 mainFrame.tabs.preview:SetScript("OnShow", function(self)
     if not self.tabInitialized then
@@ -110,7 +165,7 @@ do
     previewTab.dropContainer = dropContainer
     dropContainer:SetSize(170, 26); dropContainer:SetPoint("TOPRIGHT", -6, -2)
     dropContainer:SetBackdrop({bgFile="Interface\\ChatFrame\\ChatFrameBackground", edgeFile="Interface\\Buttons\\WHITE8X8", tile=false, tileSize=0, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
-    dropContainer:SetBackdropColor(0.08, 0.08, 0.08, 0.95); dropContainer:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
+    dropContainer:SetBackdropColor(0.050, 0.043, 0.032, 0.96); dropContainer:SetBackdropBorderColor(0.62, 0.49, 0.16, 0.85)
 
     local dropBtn = CreateFrame("Button", "$parentSubDropBtn", dropContainer)
     previewTab.dropBtn = dropBtn; dropBtn:SetAllPoints(); dropBtn:EnableMouse(true)
@@ -127,7 +182,7 @@ do
     previewTab.dropList = dropList
     dropList:SetPoint("TOPLEFT", dropContainer, "BOTTOMLEFT", 0, 2); dropList:SetPoint("TOPRIGHT", dropContainer, "BOTTOMRIGHT", 0, 2)
     dropList:SetBackdrop({bgFile="Interface\\ChatFrame\\ChatFrameBackground", edgeFile="Interface\\Buttons\\WHITE8X8", tile=false, tileSize=0, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
-    dropList:SetBackdropColor(0.08, 0.08, 0.08, 0.97); dropList:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
+    dropList:SetBackdropColor(0.050, 0.043, 0.032, 0.98); dropList:SetBackdropBorderColor(0.62, 0.49, 0.16, 0.90)
     dropList:SetFrameStrata("DIALOG"); dropList:Hide()
     local DROP_ROW_H = 20; previewTab.DROP_ROW_H = DROP_ROW_H
     local dropListButtons = {}; previewTab.dropListButtons = dropListButtons
@@ -136,7 +191,7 @@ do
     local searchContainer = CreateFrame("Frame", nil, previewTab)
     searchContainer:SetPoint("TOPLEFT", 6, -2); searchContainer:SetPoint("RIGHT", dropContainer, "LEFT", -6, 0); searchContainer:SetHeight(26)
     searchContainer:SetBackdrop({bgFile="Interface\\ChatFrame\\ChatFrameBackground", edgeFile="Interface\\Buttons\\WHITE8X8", tile=false, tileSize=0, edgeSize=1, insets={left=1,right=1,top=1,bottom=1}})
-    searchContainer:SetBackdropColor(0.08, 0.08, 0.08, 0.95); searchContainer:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
+    searchContainer:SetBackdropColor(0.050, 0.043, 0.032, 0.96); searchContainer:SetBackdropBorderColor(0.62, 0.49, 0.16, 0.85)
 
     local searchIcon = searchContainer:CreateTexture(nil, "OVERLAY"); searchIcon:SetSize(14,14); searchIcon:SetPoint("LEFT", 6, 0)
     searchIcon:SetTexture("Interface\\Common\\UI-Searchbox-Icon"); searchIcon:SetVertexColor(0.80, 0.65, 0.22)
@@ -161,7 +216,7 @@ do
     previewTab.searchQuery = ""
     previewTab.searchResults = nil
 
-    list:SetPoint("TOPLEFT", 0, -30); list:SetSize(601, 367)
+    list:SetPoint("TOPLEFT", 0, -30); list:SetPoint("BOTTOMRIGHT", -24, 21)
     local label = list:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     label:SetPoint("TOP", list, "BOTTOM", 0, 0); label:SetJustifyH("CENTER"); label:SetHeight(10); label:SetTextColor(0.85, 0.70, 0.40)
 
@@ -193,6 +248,14 @@ do
     local enchantPage = 1
     local RefreshEnchantList
 
+    list:SetScript("OnSizeChanged", function()
+        if previewTab.enchantMode then
+            if RefreshEnchantList then RefreshEnchantList() end
+        elseif previewTab.Update then
+            previewTab:Update(currSlot, currSubclass)
+        end
+    end)
+
     local arrayHasValue = ns.ArrayHasValue
 
     previewTab.RefreshEnchantList = function() if RefreshEnchantList then RefreshEnchantList() end end
@@ -203,6 +266,8 @@ do
         previewTab.currSlot = slot; previewTab.currSubclass = subclass
         currSlot = slot; currSubclass = subclass
         records = ns.GetSubclassRecords(slot, subclass) or {}
+        list.previewSlotName = slot
+        list.tryOnItemSlotName = slot
 
         local query = previewTab.searchQuery or ""
         local filteredRecords, filteredItemIds = {}, {}
@@ -331,7 +396,13 @@ do
         elseif IsControlKeyDown() then
             ns.ShowWowheadURLDialog(itemId)
         else
-            if mainFrame.selectedSlot then mainFrame.selectedSlot:SetItem(itemId); ns.HideMorphGlow(mainFrame.selectedSlot) end
+            if mainFrame.selectedSlot then
+                mainFrame.selectedSlot.isMorphed = false
+                mainFrame.selectedSlot.morphedItemId = nil
+                mainFrame.selectedSlot.isHiddenSlot = false
+                mainFrame.selectedSlot:SetItem(itemId)
+                ns.HideMorphGlow(mainFrame.selectedSlot)
+            end
         end
         list.onEnter(self)
     end
@@ -436,7 +507,9 @@ do
             if not previewTab.enchantMode or renderToken ~= previewTab.enchantRenderToken then return end
             list:SetCustomRenderer(function(dr, entry)
                 dr:OnUpdateModel(nil)
-                dr:TryOn(resolvedWeaponId)
+                local weaponSlot = (previewTab.enchantSlotName == "Enchant OH") and "Off-hand" or "Main Hand"
+                if ns.TryOnPreviewItem then ns.TryOnPreviewItem(dr, resolvedWeaponId, weaponSlot)
+                else dr:TryOn(resolvedWeaponId) end
                 dr:TryOn("item:"..resolvedWeaponId..":"..entry.id..":0:0:0:0:0:0")
                 dr:SetSequence(52)
             end)
@@ -453,8 +526,8 @@ do
             local curId = mainFrame.selectedEnchantSlot and mainFrame.selectedEnchantSlot.enchantId
             if curId then list:SelectByItemId(curId) end
             label:SetText(("Page: %d/%d  (%d enchants)"):format(enchantPage, pageCount, #enchantRecords))
-            if C_Timer and C_Timer.After then
-                C_Timer.After(0.08, function()
+            if ns.RunAfter then
+                ns.RunAfter(0.08, function()
                     if not previewTab.enchantMode or renderToken ~= previewTab.enchantRenderToken then return end
                     list:Update()
                     if curId then list:SelectByItemId(curId) end
@@ -494,9 +567,9 @@ do
     end)
 
     itemsSubTab:SetScript("OnShow", function(self)
-        if self.enchantMode then 
+        if self.enchantMode then
             if self.RefreshEnchantList then self.RefreshEnchantList() end
-        else 
+        else
             if self.Update then self:Update(self.currSlot, self.currSubclass) end
         end
     end)

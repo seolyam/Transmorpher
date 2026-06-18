@@ -1,4 +1,5 @@
 local addon, ns = ...
+local lastEnvironmentPayload = nil
 
 local ENV_DEFAULTS = {
     worldFogEnabled = false,
@@ -71,6 +72,17 @@ function ns.GetWorldEnvironmentSettings()
     if settings.worldFarClip < 100 then settings.worldFarClip = 100 end
     if settings.worldFarClip > 2666 then settings.worldFarClip = 2666 end
 
+    -- One-time cleanup: an earlier build auto-enabled the far-clip/fog overrides the
+    -- moment a slider or color changed (including the mouse wheel landing on a slider
+    -- in the non-scrolling panel), so they got silently forced ON and re-applied at
+    -- login, re-streaming the world (the "pink screen / double reload"). Disable both
+    -- once so that stuck state can't persist; re-enable is deliberate via the checkbox.
+    if not settings.atmosphereOverrideMigration then
+        settings.atmosphereOverrideMigration = true
+        settings.worldFogEnabled = false
+        settings.worldFarClipEnabled = false
+    end
+
     settings[resolveEnvironmentSettingKey("worldFogEnabled")] = settings.worldFogEnabled
     settings[resolveEnvironmentSettingKey("worldFogColor")] = settings.worldFogColor
     settings[resolveEnvironmentSettingKey("worldFogStart")] = settings.worldFogStart
@@ -107,6 +119,7 @@ function ns.QueueWorldEnvironmentSync()
     if not ns.IsMorpherReady or not ns.IsMorpherReady() then return end
 
     local settings = ns.GetWorldEnvironmentSettings()
+
     local payload = {
         "worldfog=" .. (settings.worldFogEnabled and "1" or "0"),
         "worldfogcolor=" .. tostring(settings.worldFogColor):gsub("^#", ""),
@@ -116,7 +129,11 @@ function ns.QueueWorldEnvironmentSync()
         "worldfarclip=" .. string.format("%.3f", tonumber(settings.worldFarClip) or ENV_DEFAULTS.worldFarClip),
     }
 
-    TRANSMORPHER_ENV_CFG = table.concat(payload, ";")
+    local encoded = table.concat(payload, ";")
+    if encoded ~= lastEnvironmentPayload then
+        TRANSMORPHER_ENV_CFG = encoded
+        lastEnvironmentPayload = encoded
+    end
 end
 
 local environmentReadyWatcher = CreateFrame("Frame")

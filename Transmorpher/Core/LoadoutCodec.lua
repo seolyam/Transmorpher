@@ -109,6 +109,10 @@ local function UnescapeName(name)
     return name:gsub("~", "|")
 end
 
+-- Skins/colors are no longer part of loadouts. Older export strings may still carry
+-- a |S|...|SE skin sidecar; the decoder plucks it out so the rest parses, then drops
+-- it (it is never re-hydrated or re-encoded).
+
 local function SplitPipe(encoded)
     local parts = {}
     local start = 1
@@ -200,6 +204,8 @@ function ns.NormalizeLoadoutTable(loadout)
         morphScale = loadout.morphScale,
         titleID = loadout.titleID,
         mounts = {},
+        skins = {},
+        sheathe = {},
         uid = loadout.uid,
     }
 
@@ -242,6 +248,17 @@ function ns.NormalizeLoadoutTable(loadout)
         end
     end
 
+    -- Skins/colors are intentionally not carried (normalized.skins stays empty).
+
+    -- Per-weapon sheath position (0 = Main Hand, 1 = Off-hand). Only non-default
+    -- (non -1) entries are carried.
+    if type(loadout.sheathe) == "table" then
+        for _, idx in ipairs({ 0, 1 }) do
+            local v = tonumber(loadout.sheathe[idx])
+            if v and v ~= -1 then normalized.sheathe[idx] = v end
+        end
+    end
+
     return normalized
 end
 
@@ -275,8 +292,22 @@ function ns.SerializeLoadout(loadout)
     table.sort(mountParts)
     local mountsCsv = (#mountParts > 0) and table.concat(mountParts, ";") or ""
 
+    -- Skins/colors are no longer part of loadouts, so no skin sidecar is ever emitted.
+    local skinsSidecar = ""
+
+    -- Optional sheath sidecar: "|H|<mh>:<oh>|HE" (per-weapon sheath position, raw
+    -- code; -1 = default). Plucked out before parsing on decode like the skin sidecar.
+    local sheatheSidecar = ""
+    if type(loadout.sheathe) == "table" then
+        local mh = tonumber(loadout.sheathe[0])
+        local oh = tonumber(loadout.sheathe[1])
+        if (mh and mh ~= -1) or (oh and oh ~= -1) then
+            sheatheSidecar = "|H|" .. tostring(mh or -1) .. ":" .. tostring(oh or -1) .. "|HE"
+        end
+    end
+
     local encoded = string.format(
-        "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
+        "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s%s%s",
         FORMAT_TAG,
         FORMAT_VERSION,
         name,
@@ -292,7 +323,9 @@ function ns.SerializeLoadout(loadout)
         tostring(loadout.morphForm or 0),
         tostring(ms),
         tostring(loadout.titleID or 0),
-        mountsCsv
+        mountsCsv,
+        skinsSidecar,
+        sheatheSidecar
     )
 
     return SanitizeExportString(encoded), nil
@@ -319,6 +352,35 @@ function ns.DeserializeLoadoutString(encoded)
 
     if encoded:sub(1, #FORMAT_TAG) ~= FORMAT_TAG then
         return nil, "unsupported export string (expected " .. FORMAT_TAG .. ")"
+    end
+
+    -- Optional skin sidecar: |S|...|SE (may contain pipes inside the records, so
+    -- pluck it out BEFORE SplitPipe to keep the rest of the parse simple).
+    local skinsCsv = nil
+    do
+        local sStart = encoded:find("|S|", 1, true)
+        if sStart then
+            local sEnd = encoded:find("|SE", sStart + 3, true)
+            if sEnd then
+                skinsCsv = encoded:sub(sStart + 3, sEnd - 1)
+                encoded = encoded:sub(1, sStart - 1) .. encoded:sub(sEnd + 3)
+                if encoded:sub(-1) == "|" then encoded = encoded:sub(1, -2) end
+            end
+        end
+    end
+
+    -- Optional sheath sidecar |H|<mh>:<oh>|HE — pluck it out the same way.
+    local sheatheCsv = nil
+    do
+        local hStart = encoded:find("|H|", 1, true)
+        if hStart then
+            local hEnd = encoded:find("|HE", hStart + 3, true)
+            if hEnd then
+                sheatheCsv = encoded:sub(hStart + 3, hEnd - 1)
+                encoded = encoded:sub(1, hStart - 1) .. encoded:sub(hEnd + 3)
+                if encoded:sub(-1) == "|" then encoded = encoded:sub(1, -2) end
+            end
+        end
     end
 
     local parts = SplitPipe(encoded)
@@ -404,7 +466,21 @@ function ns.DeserializeLoadoutString(encoded)
         morphScale = (tonumber(mscale100) or 100) / 100.0,
         titleID = tonumber(title) or 0,
         mounts = ParseMountsList(mountsStr),
+        skins = {},
+        sheathe = {},
     }
+
+    -- skinsCsv (legacy |S|...|SE) is intentionally discarded: skins/colors are no
+    -- longer part of loadouts. It was only plucked out above so the rest parses.
+
+    -- Re-hydrate the sheath sidecar (mh:oh, raw codes; -1 = default/absent).
+    if sheatheCsv and sheatheCsv ~= "" then
+        local mhStr, ohStr = sheatheCsv:match("^(-?%d+):(-?%d+)$")
+        local mh = tonumber(mhStr)
+        local oh = tonumber(ohStr)
+        if mh and mh ~= -1 then loadout.sheathe[0] = mh end
+        if oh and oh ~= -1 then loadout.sheathe[1] = oh end
+    end
 
     if loadout.enchantMH <= 0 then loadout.enchantMH = nil end
     if loadout.enchantOH <= 0 then loadout.enchantOH = nil end
@@ -428,106 +504,4 @@ function ns.IsLoadoutExportString(encoded)
     encoded = encoded:match("^%s*(.-)%s*$")
     return encoded:sub(1, #FORMAT_TAG) == FORMAT_TAG
         and (encoded:sub(#FORMAT_TAG + 1, #FORMAT_TAG + 1) == "|")
-end
-
--- ============================================================
--- SPELL MORPH PROFILE EXPORT / IMPORT CODEC (SM1)
---
--- Format: SM1|<name>|<sourceId>:<targetId>;<sourceId>:<targetId>;...
---
--- Standalone codec for spell morph profiles (direct spell-to-spell
--- mappings stored in TransmorpherCharacterState.SpellMorphs).
--- Import uses MERGE/UPSERT logic: existing base spell IDs are
--- overwritten, new ones are added, unmentioned morphs are untouched.
--- ============================================================
-
-local SM1_TAG = "SM1"
-
-function ns.SerializeSpellMorphProfile(profileName)
-    if not TransmorpherCharacterState or not TransmorpherCharacterState.SpellMorphs then
-        return nil, "no spell morphs to export"
-    end
-
-    local morphs = TransmorpherCharacterState.SpellMorphs
-    local pairs_list = {}
-    for sourceId, targetId in pairs(morphs) do
-        local src = tonumber(sourceId)
-        local tgt = tonumber(targetId)
-        if src and src > 0 and tgt and tgt > 0 then
-            pairs_list[#pairs_list + 1] = tostring(src) .. ":" .. tostring(tgt)
-        end
-    end
-
-    if #pairs_list == 0 then
-        return nil, "no active spell morphs to export"
-    end
-
-    table.sort(pairs_list)
-
-    local name = EscapeName(profileName or "Spell Morphs")
-    local morphsCsv = table.concat(pairs_list, ";")
-
-    local encoded = string.format("%s|%s|%s", SM1_TAG, name, morphsCsv)
-    return encoded, nil
-end
-
-function ns.DeserializeSpellMorphProfile(encoded)
-    if type(encoded) ~= "string" then
-        return nil, "spell morph string must be text"
-    end
-
-    encoded = encoded:match("^%s*(.-)%s*$")
-    if encoded == "" then
-        return nil, "spell morph string is empty"
-    end
-
-    -- Fix double pipes caused by WoW EditBox escaping
-    encoded = encoded:gsub("||", "|")
-
-    -- Strip trailing pipe if present
-    if encoded:sub(-1) == "|" then
-        encoded = encoded:sub(1, -2)
-    end
-
-    if encoded:sub(1, #SM1_TAG) ~= SM1_TAG then
-        return nil, "unsupported spell morph string (expected " .. SM1_TAG .. ")"
-    end
-
-    local parts = SplitPipe(encoded)
-
-    if parts[1] ~= SM1_TAG then
-        return nil, "unsupported spell morph string (expected " .. SM1_TAG .. ")"
-    end
-
-    local name = UnescapeName(parts[2] or "")
-    local morphsStr = parts[3] or ""
-
-    if morphsStr == "" then
-        return nil, "spell morph string contains no morph data"
-    end
-
-    local morphs = {}
-    local count = 0
-    for pair in string.gmatch(morphsStr, "[^;]+") do
-        local srcStr, tgtStr = pair:match("^(%d+):(%d+)$")
-        local src = tonumber(srcStr)
-        local tgt = tonumber(tgtStr)
-        if src and src > 0 and tgt and tgt > 0 then
-            morphs[src] = tgt
-            count = count + 1
-        end
-    end
-
-    if count == 0 then
-        return nil, "spell morph string contains no valid morph pairs"
-    end
-
-    return { name = name, morphs = morphs, count = count }, nil
-end
-
-function ns.IsSpellMorphProfileString(encoded)
-    if type(encoded) ~= "string" then return false end
-    encoded = encoded:match("^%s*(.-)%s*$")
-    return encoded:sub(1, #SM1_TAG) == SM1_TAG
-        and (encoded:sub(#SM1_TAG + 1, #SM1_TAG + 1) == "|")
 end

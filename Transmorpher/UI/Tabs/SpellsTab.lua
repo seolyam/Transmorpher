@@ -30,7 +30,7 @@ local function BuildSpellPool(showAllRanks)
         if not spellId or seen[spellId] then return end
         local name, rank, icon = GetSpellInfo(spellId)
         if not name or name == "" then return end
-        
+
         seen[spellId] = true
         local entry = {
             id = spellId,
@@ -275,6 +275,22 @@ function ns.InitSpellsTab(parent)
         rows[i]:Hide()
     end
 
+    local function LayoutSpellRows()
+        local width = math.max(1, (morphSubTab:GetWidth() or 0) - 40)
+        local newRows = math.floor(((morphSubTab:GetHeight() or 0) - 60) / ROW_HEIGHT)
+        if newRows < 1 then newRows = 1 end
+        NUM_ROWS = newRows
+        for i = 1, NUM_ROWS do
+            if not rows[i] then rows[i] = CreateSpellRow(morphSubTab) end
+            rows[i]:ClearAllPoints()
+            rows[i]:SetPoint("TOPLEFT", 10, -50 - (i - 1) * ROW_HEIGHT)
+            rows[i]:SetWidth(width)
+        end
+        for i = NUM_ROWS + 1, #rows do rows[i]:Hide() end
+        UpdateScroll()
+    end
+    morphSubTab:SetScript("OnSizeChanged", LayoutSpellRows)
+
     local header = CreateFrame("Frame", nil, morphSubTab)
     header:SetPoint("TOPLEFT", 6, -6)
     header:SetPoint("TOPRIGHT", -26, -6)
@@ -511,324 +527,6 @@ function ns.InitSpellsTab(parent)
         ns.SendMorphCommand("SPELL_DBC_STATUS")
     end
 
-    -- ============================================================
-    -- SPELL MORPH PROFILE EXPORT / IMPORT / CLEAR ALL
-    -- ============================================================
-
-    -- Action bar below header
-    local actionBar = CreateFrame("Frame", nil, morphSubTab)
-    actionBar:SetFrameLevel(morphSubTab:GetFrameLevel() + 10)
-    actionBar:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -2)
-    actionBar:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", 0, -2)
-    actionBar:SetHeight(28)
-    actionBar:SetBackdrop({
-        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-        edgeFile = "Interface\\Buttons\\WHITE8X8",
-        tile = false, tileSize = 0, edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 }
-    })
-    actionBar:SetBackdropColor(0.05, 0.05, 0.05, 0.9)
-    actionBar:SetBackdropBorderColor(0.25, 0.22, 0.14, 0.8)
-
-    local btnSpellExport = ns.CreateGoldenButton(nil, actionBar)
-    btnSpellExport:SetSize(72, 20)
-    btnSpellExport:SetPoint("LEFT", 8, 0)
-    btnSpellExport:SetText("Export")
-
-    local btnSpellImport = ns.CreateGoldenButton(nil, actionBar)
-    btnSpellImport:SetSize(72, 20)
-    btnSpellImport:SetPoint("LEFT", btnSpellExport, "RIGHT", 6, 0)
-    btnSpellImport:SetText("Import")
-
-    local btnClearAll = ns.CreateGoldenButton(nil, actionBar)
-    btnClearAll:SetSize(82, 20)
-    btnClearAll:SetPoint("LEFT", btnSpellImport, "RIGHT", 6, 0)
-    btnClearAll:SetText("Clear All")
-
-    local morphCountLabel = actionBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    morphCountLabel:SetPoint("RIGHT", -10, 0)
-    morphCountLabel:SetTextColor(0.6, 0.6, 0.6)
-
-    local function UpdateMorphCount()
-        local count = 0
-        if TransmorpherCharacterState and TransmorpherCharacterState.SpellMorphs then
-            for _ in pairs(TransmorpherCharacterState.SpellMorphs) do
-                count = count + 1
-            end
-        end
-        if count > 0 then
-            morphCountLabel:SetText("|cffF5C842" .. count .. "|r active morph" .. (count == 1 and "" or "s"))
-        else
-            morphCountLabel:SetText("|cff888888No active morphs|r")
-        end
-    end
-
-    -- Adjust scroll frame to account for the new action bar
-    scroll:ClearAllPoints()
-    scroll:SetPoint("TOPLEFT", 0, -80)
-    scroll:SetPoint("BOTTOMRIGHT", -26, 10)
-
-    -- Adjust row positions
-    for i = 1, NUM_ROWS do
-        rows[i]:ClearAllPoints()
-        rows[i]:SetPoint("TOPLEFT", 10, -80 - (i - 1) * ROW_HEIGHT)
-    end
-
-    -- ============================================================
-    -- String Dialog (shared by export and import)
-    -- ============================================================
-
-    local smDialog = CreateFrame("Frame", "TransmorpherSpellMorphStringDialog", UIParent)
-    smDialog:SetSize(520, 200)
-    smDialog:SetPoint("CENTER")
-    smDialog:SetFrameStrata("FULLSCREEN_DIALOG")
-    smDialog:SetToplevel(true)
-    smDialog:SetBackdrop({
-        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-        tile = true, tileSize = 32, edgeSize = 32,
-        insets = { left = 11, right = 12, top = 12, bottom = 11 },
-    })
-    smDialog:Hide()
-    smDialog:EnableMouse(true)
-    smDialog:SetMovable(true)
-    smDialog:RegisterForDrag("LeftButton")
-    smDialog:SetScript("OnDragStart", smDialog.StartMoving)
-    smDialog:SetScript("OnDragStop", smDialog.StopMovingOrSizing)
-
-    local smDialogTitle = smDialog:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
-    smDialogTitle:SetPoint("TOP", 0, -16)
-
-    local smDialogHint = smDialog:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    smDialogHint:SetPoint("TOP", 0, -36)
-    smDialogHint:SetWidth(480)
-    smDialogHint:SetJustifyH("CENTER")
-
-    local smDialogScroll = CreateFrame("ScrollFrame", "$parentScroll", smDialog, "UIPanelScrollFrameTemplate")
-    smDialogScroll:SetPoint("TOPLEFT", 24, -56)
-    smDialogScroll:SetPoint("BOTTOMRIGHT", -44, 48)
-
-    local SM_EDIT_WIDTH = 430
-    local SM_EDIT_HEIGHT = 90
-
-    local smDialogEdit = CreateFrame("EditBox", "$parentEdit", smDialogScroll)
-    smDialogEdit:SetMultiLine(true)
-    smDialogEdit:SetAutoFocus(false)
-    smDialogEdit:SetFontObject("ChatFontNormal")
-    smDialogEdit:SetWidth(SM_EDIT_WIDTH)
-    smDialogEdit:SetHeight(SM_EDIT_HEIGHT)
-    smDialogEdit:SetMaxLetters(4096)
-    if smDialogEdit.SetTextInsets then
-        smDialogEdit:SetTextInsets(4, 4, 4, 4)
-    end
-    smDialogEdit:SetScript("OnEscapePressed", function(self)
-        self:ClearFocus()
-        smDialog:Hide()
-    end)
-    smDialogScroll:SetScrollChild(smDialogEdit)
-
-    local smDialogMode = "export"
-
-    local btnSMClose = CreateFrame("Button", nil, smDialog, "UIPanelButtonTemplate")
-    btnSMClose:SetSize(90, 22)
-    btnSMClose:SetPoint("BOTTOMRIGHT", -16, 16)
-    btnSMClose:SetText(CLOSE)
-    btnSMClose:SetScript("OnClick", function() smDialog:Hide() end)
-
-    local btnSMImport = CreateFrame("Button", nil, smDialog, "UIPanelButtonTemplate")
-    btnSMImport:SetSize(110, 22)
-    btnSMImport:SetPoint("BOTTOMLEFT", 16, 16)
-    btnSMImport:SetText("Import & Merge")
-    btnSMImport:Hide()
-
-    -- ============================================================
-    -- Apply Spell Morph Profile (Merge/Upsert)
-    -- ============================================================
-
-    local function ApplySpellMorphProfile(profile)
-        if not profile or not profile.morphs then return false, "no morph data" end
-        if not TransmorpherCharacterState then return false, "no character state" end
-        if not TransmorpherCharacterState.SpellMorphs then
-            TransmorpherCharacterState.SpellMorphs = {}
-        end
-
-        local applied = 0
-        local overwritten = 0
-        for sourceId, targetId in pairs(profile.morphs) do
-            local src = tonumber(sourceId)
-            local tgt = tonumber(targetId)
-            if src and src > 0 and tgt and tgt > 0 then
-                -- Check if this is an overwrite or a new entry
-                local existing = TransmorpherCharacterState.SpellMorphs[src]
-                if existing and tonumber(existing) ~= tgt then
-                    overwritten = overwritten + 1
-                end
-
-                -- Merge/Upsert: set the spell morph in state
-                ns.SetSpellMorph(src, tgt)
-
-                -- Send the command to the DLL
-                ns.SendMorphCommand("SPELL_MORPH:" .. src .. ":" .. tgt)
-
-                applied = applied + 1
-            end
-        end
-
-        return true, applied, overwritten
-    end
-
-    -- Expose for slash commands
-    ns.ApplySpellMorphProfile = ApplySpellMorphProfile
-
-    -- ============================================================
-    -- Export Dialog
-    -- ============================================================
-
-    local function ShowSpellMorphExportDialog()
-        local encoded, err = ns.SerializeSpellMorphProfile("Spell Morphs")
-        if not encoded then
-            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: |cffff0000Export failed:|r " .. (err or "unknown error"))
-            return
-        end
-
-        smDialogMode = "export"
-        smDialogEdit:SetHeight(SM_EDIT_HEIGHT)
-        smDialogEdit:SetWidth(SM_EDIT_WIDTH)
-        smDialogEdit:SetText(encoded)
-        smDialogTitle:SetText("Export Spell Morphs")
-
-        -- Count morphs for hint
-        local count = 0
-        if TransmorpherCharacterState and TransmorpherCharacterState.SpellMorphs then
-            for _ in pairs(TransmorpherCharacterState.SpellMorphs) do
-                count = count + 1
-            end
-        end
-        smDialogHint:SetText(count .. " spell morph" .. (count == 1 and "" or "s") .. " exported. Select all and copy (Ctrl+A, Ctrl+C).")
-
-        btnSMImport:Hide()
-        smDialog:Show()
-        smDialogEdit:SetFocus()
-        smDialogEdit:HighlightText()
-
-        -- Also print to chat
-        SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r Spell morph export string (also shown in dialog — Ctrl+A, Ctrl+C):")
-        local chunkSize = 220
-        for i = 1, #encoded, chunkSize do
-            SELECTED_CHAT_FRAME:AddMessage(encoded:sub(i, i + chunkSize - 1))
-        end
-    end
-
-    -- ============================================================
-    -- Import Dialog
-    -- ============================================================
-
-    local function ShowSpellMorphImportDialog()
-        smDialogMode = "import"
-        smDialogEdit:SetHeight(SM_EDIT_HEIGHT)
-        smDialogEdit:SetWidth(SM_EDIT_WIDTH)
-        smDialogEdit:SetText("")
-        smDialogTitle:SetText("Import Spell Morphs")
-        smDialogHint:SetText("Paste an SM1 spell morph string, then click Import & Merge.")
-        btnSMImport:Show()
-        smDialog:Show()
-        smDialogEdit:SetFocus()
-    end
-
-    local function ImportSpellMorphFromString(encoded)
-        encoded = encoded and encoded:match("^%s*(.-)%s*$") or ""
-        local profile, err = ns.DeserializeSpellMorphProfile(encoded)
-        if not profile then
-            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: |cffff0000Import failed:|r " .. (err or "unknown error"))
-            return false
-        end
-
-        local ok, applied, overwritten = ApplySpellMorphProfile(profile)
-        if not ok then
-            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: |cffff0000Import failed:|r " .. tostring(applied))
-            return false
-        end
-
-        -- Refresh the UI
-        RefreshMorphView()
-        UpdateMorphCount()
-        PlaySound("gsTitleOptionOK")
-
-        local msg = "|cffF5C842<Transmorpher>|r: Imported profile '" .. (profile.name or "Spell Morphs") .. "' — "
-            .. "|cff00ff00" .. applied .. "|r morph" .. (applied == 1 and "" or "s") .. " applied"
-        if overwritten > 0 then
-            msg = msg .. " (|cffffff00" .. overwritten .. " overwritten|r)"
-        end
-        SELECTED_CHAT_FRAME:AddMessage(msg .. ".")
-
-        return true
-    end
-
-    -- Expose for slash commands
-    ns.ImportSpellMorphFromString = ImportSpellMorphFromString
-
-    btnSMImport:SetScript("OnClick", function()
-        ImportSpellMorphFromString(smDialogEdit:GetText())
-        smDialog:Hide()
-    end)
-
-    -- ============================================================
-    -- Clear All Confirmation
-    -- ============================================================
-
-    StaticPopupDialogs["TRANSMORPHER_CLEAR_ALL_SPELL_MORPHS"] = {
-        text = "Are you sure you want to clear ALL spell morphs?\n\nThis will reset every spell back to its original appearance.",
-        button1 = "Clear All",
-        button2 = "Cancel",
-        OnAccept = function()
-            if TransmorpherCharacterState and TransmorpherCharacterState.SpellMorphs then
-                -- Send reset for each active morph
-                for sourceId in pairs(TransmorpherCharacterState.SpellMorphs) do
-                    local src = tonumber(sourceId)
-                    if src and src > 0 then
-                        ns.SendMorphCommand("SPELL_RESET:" .. src)
-                    end
-                end
-                wipe(TransmorpherCharacterState.SpellMorphs)
-            end
-
-            RefreshMorphView()
-            UpdateMorphCount()
-            PlaySound("gsTitleOptionOK")
-            SELECTED_CHAT_FRAME:AddMessage("|cffF5C842<Transmorpher>|r: All spell morphs cleared.")
-        end,
-        timeout = 0,
-        whileDead = true,
-        hideOnEscape = true,
-    }
-
-    -- ============================================================
-    -- Button Handlers
-    -- ============================================================
-
-    btnSpellExport:SetScript("OnClick", function()
-        ShowSpellMorphExportDialog()
-    end)
-
-    btnSpellImport:SetScript("OnClick", function()
-        ShowSpellMorphImportDialog()
-    end)
-
-    btnClearAll:SetScript("OnClick", function()
-        StaticPopup_Show("TRANSMORPHER_CLEAR_ALL_SPELL_MORPHS")
-    end)
-
-    -- ============================================================
-    -- Expose for Slash Commands
-    -- ============================================================
-
-    ns.ShowSpellMorphExportDialog = ShowSpellMorphExportDialog
-    ns.ShowSpellMorphImportDialog = ShowSpellMorphImportDialog
-
-    -- ============================================================
-    -- Sub-Tab Logic
-    -- ============================================================
-
     local function ShowSpellSubTab(id)
         local showMorphs = id == 1
 
@@ -838,7 +536,6 @@ function ns.InitSpellsTab(parent)
 
         if showMorphs then
             RefreshMorphView()
-            UpdateMorphCount()
         end
 
         PlaySound("gsTitleOptionOK")
@@ -853,11 +550,9 @@ function ns.InitSpellsTab(parent)
             ShowSpellSubTab(1)
             parent.tabInitialized = true
         end
-        UpdateMorphCount()
     end)
 
     RefreshMorphView()
-    UpdateMorphCount()
     if #spellPool == 0 then
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[Transmorpher]|r Scanning spellbook... (Please wait if just logged in)")
     end

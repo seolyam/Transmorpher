@@ -52,6 +52,52 @@ function ns.GetSettings()
 end
 
 -- ============================================================
+-- ACCOUNT-WIDE SETTINGS ACCESSOR
+-- Backed by the TransmorpherSettings SavedVariable (account scope,
+-- declared in the .toc). Used for preferences that should be shared
+-- by EVERY character on the account (e.g. the Damage Text styling).
+-- ============================================================
+function ns.GetAccountSettings()
+    if not TransmorpherSettings then
+        TransmorpherSettings = {}
+    end
+
+    -- Damage Text (over-unit "world text") styling — account-wide so it
+    -- looks identical on every character without re-configuring per toon.
+    if type(TransmorpherSettings.colorWorldText) ~= "table" then
+        TransmorpherSettings.colorWorldText = {
+            cats  = {},
+            speed = 25,                          -- rainbow speed % (100% = 1 cycle/sec)
+            size  = { enabled = false, pct = 100 },
+        }
+    end
+    local wt = TransmorpherSettings.colorWorldText
+    if type(wt.cats) ~= "table" then wt.cats = {} end
+    if type(wt.size) ~= "table" then wt.size = { enabled = false, pct = 100 } end
+    if wt.speed == nil then wt.speed = 25 end
+
+    -- One-time migration: pull any existing per-character Damage Text config
+    -- forward into the account store so users don't lose their setup.
+    if not TransmorpherSettings._wtMigrated then
+        local perChar = rawget(_G, "TransmorpherSettingsPerChar")
+        if type(perChar) == "table" and type(perChar.colorWorldText) == "table" then
+            local old = perChar.colorWorldText
+            if type(old.cats) == "table" and next(old.cats) ~= nil and next(wt.cats) == nil then
+                for k, v in pairs(old.cats) do wt.cats[k] = v end
+                if old.speed ~= nil then wt.speed = old.speed end
+                if type(old.size) == "table" then
+                    wt.size.enabled = old.size.enabled and true or false
+                    wt.size.pct = old.size.pct or 100
+                end
+            end
+        end
+        TransmorpherSettings._wtMigrated = true
+    end
+
+    return TransmorpherSettings
+end
+
+-- ============================================================
 -- MORPH SUSPENSION FLAGS
 -- ============================================================
 ns.morphSuspended = false
@@ -484,87 +530,110 @@ end
 -- ============================================================
 
 -- Debounced sync scheduler to coalesce multiple rebuild requests
+-- Run fn after `delay` seconds. C_Timer does NOT reliably exist on 3.3.5a, so we
+-- drive everything off ONE persistent ticker frame parented to UIParent (so its
+-- OnUpdate is guaranteed to fire — a parentless frame's OnUpdate is not reliable).
+-- A list of pending {at, fn} jobs is processed each frame.
+local _runAfterJobs = {}
+local _runAfterTicker = CreateFrame("Frame", nil, UIParent)
+_runAfterTicker:SetScript("OnUpdate", function(self, dt)
+    if #_runAfterJobs == 0 then return end
+    local now = GetTime()
+    local i = 1
+    while i <= #_runAfterJobs do
+        local job = _runAfterJobs[i]
+        if now >= job.at then
+            table.remove(_runAfterJobs, i)
+            local ok, err = pcall(job.fn)
+            if not ok and ns.Log then ns.Log("RunAfter error: " .. tostring(err)) end
+        else
+            i = i + 1
+        end
+    end
+end)
+function ns.RunAfter(delay, fn)
+    if type(fn) ~= "function" then return end
+    _runAfterJobs[#_runAfterJobs + 1] = { at = GetTime() + (tonumber(delay) or 0), fn = fn }
+end
+
+-- Change counters for non-slot state that affects the preview model.
+-- Bumped by ns.NotifyDressingRoomChanged(); included in the sync dedup key
+-- so SyncDressingRoom never skips the rebuild after a barber/skin change.
+ns._barberChangeSeq = 0
+ns._skinChangeSeq   = 0
+
+-- Central notification for any change that requires a dressing-room rebuild.
+-- Bumps the relevant counter (so the dedup key changes) and schedules ONE
+-- debounced sync.  Multiple rapid calls (e.g. slider dragging) coalesce into
+-- a single rebuild — no flicker, no redundant work.
+function ns.NotifyDressingRoomChanged(source, delay)
+    if source == "barber" then
+        ns._barberChangeSeq = (ns._barberChangeSeq or 0) + 1
+    elseif source == "skin" then
+        ns._skinChangeSeq = (ns._skinChangeSeq or 0) + 1
+    end
+    ns.ScheduleDressingRoomSync(delay or 0.08)
+end
+
 function ns.ScheduleDressingRoomSync(delay)
     local d = (type(delay) == "number" and delay >= 0) and delay or 0.05
-    if ns._dressingRoomSyncScheduled then return end
-    ns._dressingRoomSyncScheduled = true
-    if C_Timer and C_Timer.After then
-        C_Timer.After(d, function()
+    if not ns._drSyncFrame then
+        ns._drSyncFrame = CreateFrame("Frame"); ns._drSyncFrame:Hide(); ns._drSyncFrame.targetAt = 0
+        ns._drSyncFrame:SetScript("OnUpdate", function(self)
+            if GetTime() < (self.targetAt or 0) then return end
+            self:Hide()
             ns._dressingRoomSyncScheduled = false
             if ns.SyncDressingRoom then ns.SyncDressingRoom() end
         end)
-    else
-        if not ns._drSyncFrame then
-            ns._drSyncFrame = CreateFrame("Frame"); ns._drSyncFrame:Hide(); ns._drSyncFrame.elapsed = 0
-        end
-        ns._drSyncFrame.elapsed = 0
-        ns._drSyncFrame:SetScript("OnUpdate", function(self, dt)
-            self.elapsed = self.elapsed + dt
-            if self.elapsed < d then return end
-            self:Hide(); self:SetScript("OnUpdate", nil)
-            ns._dressingRoomSyncScheduled = false
-            if ns.SyncDressingRoom then ns.SyncDressingRoom() end
-        end)
-        ns._drSyncFrame:Show()
     end
+    ns._dressingRoomSyncScheduled = true
+    ns._drSyncFrame.targetAt = GetTime() + d
+    ns._drSyncFrame:Show()
 end
 
 function ns.SyncDressingRoom()
     local mainFrame = ns.mainFrame
     if not mainFrame or not mainFrame.dressingRoom or not mainFrame.slots then return end
-    ns._dressingRoomSyncToken = (ns._dressingRoomSyncToken or 0) + 1
-    local syncToken = ns._dressingRoomSyncToken
-    mainFrame.dressingRoom:SetLight(1, 0, 0, 1, 0, 1, 0.7, 0.7, 0.7, 1, 0.8, 0.8, 0.64)
-    mainFrame.dressingRoom:SetModelAlpha(0)
-    mainFrame.dressingRoom:Undress()
+    local room = mainFrame.dressingRoom
+    room.suppressSyncUntil = nil
+    room.forceNextSync = nil
+    room.lastSyncKey = nil
+
+    if ns.RefreshAllEyeButtons then ns.RefreshAllEyeButtons() end
+    room:SetModelAlpha(1)
+    if room.SetLight then room:SetLight(1, 0, 0, 1, 0, 1, 0.7, 0.7, 0.7, 1, 0.8, 0.8, 0.64) end
+
+    -- DressMe-style rebuild: the Character Preview is just a DressUpModel based on
+    -- player, stripped, then dressed from the slot buttons exactly as the UI shows.
+    if room.Reset then room:Reset() elseif room.SetUnit then room:SetUnit("player") end
+    if room.Undress then room:Undress() end
 
     local hasMainHand = mainFrame.slots["Main Hand"] and mainFrame.slots["Main Hand"].itemId
         and mainFrame.slots["Main Hand"].itemId > 0 and not mainFrame.slots["Main Hand"].isHiddenSlot
     local hasOffHand = mainFrame.slots["Off-hand"] and mainFrame.slots["Off-hand"].itemId
         and mainFrame.slots["Off-hand"].itemId > 0 and not mainFrame.slots["Off-hand"].isHiddenSlot
-    local pendingAsync = 0
-    local revealed = false
-    local function Reveal()
-        if revealed then return end
-        revealed = true
-        if ns._dressingRoomSyncToken ~= syncToken then return end
-        if not mainFrame or not mainFrame.dressingRoom then return end
-        mainFrame.dressingRoom:SetModelAlpha(1)
+
+    local mhSlot, ohSlot, rangedSlotRef
+    local function TrySlot(slot)
+        if not slot or not slot.itemId or slot.itemId <= 0 or slot.isHiddenSlot then return end
+        if ns.TryOnPreviewItem then ns.TryOnPreviewItem(room, slot.itemId, slot.slotName)
+        elseif room.TryOn then room:TryOn(slot.itemId) end
     end
 
-    for _, slotName in ipairs(ns.slotOrder) do
+    for _, slotName in ipairs(ns.slotOrder or {}) do
         local slot = mainFrame.slots[slotName]
         if slot and slot.itemId and slot.itemId > 0 and not slot.isHiddenSlot then
-            if slotName == "Ranged" and (hasMainHand or hasOffHand) then
-                -- Don't display ranged weapon when melee weapons are equipped
-            else
-                do
-                    local expectedId = slot.itemId
-                    local slotRef = slot
-                    mainFrame.dressingRoom:TryOn(expectedId)
-                    pendingAsync = pendingAsync + 1
-                    ns.QueryItem(expectedId, function(queriedItemId, success)
-                        if ns._dressingRoomSyncToken == syncToken then
-                            if success and queriedItemId == expectedId and slotRef and slotRef.itemId == expectedId and mainFrame and mainFrame.dressingRoom then
-                                mainFrame.dressingRoom:TryOn(queriedItemId)
-                            end
-                            pendingAsync = pendingAsync - 1
-                            if pendingAsync <= 0 then
-                                Reveal()
-                            end
-                        end
-                    end)
-                end
-            end
+            if slotName == "Main Hand" then mhSlot = slot
+            elseif slotName == "Off-hand" then ohSlot = slot
+            elseif slotName == "Ranged" then rangedSlotRef = slot
+            else TrySlot(slot) end
         end
     end
+    if ohSlot then TrySlot(ohSlot) end
+    if mhSlot then TrySlot(mhSlot) end
+    if rangedSlotRef and not hasMainHand and not hasOffHand then TrySlot(rangedSlotRef) end
 
-    ns.UpdateSpecialSlots()
-    if pendingAsync <= 0 then
-        Reveal()
-    elseif C_Timer and C_Timer.After then
-        C_Timer.After(0.12, Reveal)
-    end
+    if ns.UpdateSpecialSlots then ns.UpdateSpecialSlots() end
 end
 
 -- ============================================================

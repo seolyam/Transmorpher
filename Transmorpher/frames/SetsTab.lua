@@ -217,6 +217,14 @@ function ns.InitSetsTab(parent)
     local scrollChild = CreateFrame("Frame")
     scrollChild:SetSize(170, 1)
     scrollFrame:SetScrollChild(scrollChild)
+    scrollFrame:SetScript("OnSizeChanged", function(self, w)
+        local width = math.max(1, (w or 0) - 4)
+        scrollChild:SetWidth(width)
+        for _, btn in ipairs(setsButtons) do
+            btn:SetWidth(math.max(1, width - 4))
+            if btn.text then btn.text:SetWidth(math.max(1, width - 44)) end
+        end
+    end)
 
     local model = ns.CreateDressingRoom("$parentModel", frame)
     model:SetPoint("TOPLEFT", listContainer, "TOPRIGHT", 10, 0)
@@ -258,7 +266,7 @@ function ns.InitSetsTab(parent)
         local bg = model.backgroundTextures[key]
         if bg then
             bg:Show()
-            bg:SetAllPoints(frame)
+            bg:SetAllPoints(model)
         end
     end
 
@@ -436,20 +444,34 @@ function ns.InitSetsTab(parent)
         end
 
         local currentSet = selectedSet
-        for _, item in ipairs(selectedSet.items) do
-            if item.slot ~= "Main Hand" and item.slot ~= "Off-hand" and item.slot ~= "Ranged" then
-                local itemId = item.itemId
-                if GetItemInfo(itemId) then
-                    model:TryOn(itemId)
-                else
-                    ns.QueryItem(itemId, function(qId, success)
-                        if success and selectedSet == currentSet then
-                            model:TryOn(qId)
-                        end
-                    end)
-                end
+        local mainHand, offHand, ranged
+        local function TrySetItem(itemId, slotName)
+            if ns.TryOnPreviewItem then ns.TryOnPreviewItem(model, itemId, slotName)
+            else model:TryOn(itemId) end
+        end
+        local function TryOrQuery(itemId, slotName)
+            if GetItemInfo(itemId) then
+                TrySetItem(itemId, slotName)
+            else
+                ns.QueryItem(itemId, function(qId, success)
+                    if success and selectedSet == currentSet then
+                        TrySetItem(qId, slotName)
+                    end
+                end)
             end
         end
+        for _, item in ipairs(selectedSet.items) do
+            local itemId = item.itemId
+            if item.slot == "Main Hand" then mainHand = itemId
+            elseif item.slot == "Off-hand" then offHand = itemId
+            elseif item.slot == "Ranged" then ranged = itemId
+            else
+                TryOrQuery(itemId, item.slot)
+            end
+        end
+        if offHand then TryOrQuery(offHand, "Off-hand") end
+        if mainHand then TryOrQuery(mainHand, "Main Hand") end
+        if ranged and not mainHand and not offHand then TryOrQuery(ranged, "Ranged") end
     end
 
     SelectSet = function(setData)
@@ -499,7 +521,7 @@ function ns.InitSetsTab(parent)
             local btn = setsButtons[i]
             if not btn then
                 btn = CreateFrame("Button", nil, scrollChild)
-                btn:SetSize(165, 32)
+                btn:SetSize(math.max(1, scrollChild:GetWidth() - 4), 32)
 
                 local bg = btn:CreateTexture(nil, "BACKGROUND")
                 bg:SetAllPoints()
@@ -527,7 +549,7 @@ function ns.InitSetsTab(parent)
                 local text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
                 text:SetPoint("LEFT", icon, "RIGHT", 8, 0)
                 text:SetJustifyH("LEFT")
-                text:SetWidth(125)
+                text:SetWidth(math.max(1, scrollChild:GetWidth() - 44))
                 text:SetWordWrap(false)
                 text:SetTextColor(1, 0.82, 0)
                 btn.text = text
@@ -535,6 +557,8 @@ function ns.InitSetsTab(parent)
                 setsButtons[i] = btn
             end
 
+            btn:SetWidth(math.max(1, scrollChild:GetWidth() - 4))
+            btn.text:SetWidth(math.max(1, scrollChild:GetWidth() - 44))
             btn:SetPoint("TOPLEFT", 0, -yOffset)
             btn.text:SetText(setData.name)
             btn.setData = setData
@@ -587,6 +611,8 @@ function ns.InitSetsTab(parent)
             end
         end
         if mainFrame.buttons and mainFrame.buttons.applyAll then
+            -- Apply All sends only real descriptor changes; the DLL refreshes
+            -- components only if those descriptors actually changed.
             mainFrame.buttons.applyAll:Click()
         end
         print("|cffF5C842<Transmorpher>|r: Applied set " .. selectedSet.name)

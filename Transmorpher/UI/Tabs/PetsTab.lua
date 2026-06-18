@@ -7,6 +7,7 @@ local addon, ns = ...
 local mainFrame = ns.mainFrame
 local petTab = mainFrame.tabs.pets
 local ROW_HEIGHT = 28
+local petButtons
 
 -- Search bar
 local searchContainer = CreateFrame("Frame", nil, petTab)
@@ -115,6 +116,13 @@ listScroll:SetPoint("TOPLEFT", 4, -20); listScroll:SetPoint("BOTTOMRIGHT", -22, 
 local listContent = CreateFrame("Frame", "$parentPetListContent", listScroll)
 listContent:SetSize(listScroll:GetWidth(), 1)
 listScroll:SetScrollChild(listContent)
+listScroll:SetScript("OnSizeChanged", function(self, w)
+    local width = math.max(1, (w or 0) - 4)
+    listContent:SetWidth(width)
+    if petButtons then
+        for _, row in ipairs(petButtons) do row:SetWidth(math.max(1, width - 4)) end
+    end
+end)
 
 -- Bottom buttons
 local btnSetPet = ns.CreateGoldenButton("$parentBtnSetPet", petTab)
@@ -140,7 +148,7 @@ AddButtonTooltip(btnSetPet, "Set Pet", "Assign this appearance to your non-comba
 AddButtonTooltip(btnResetPet, "Reset Pet", "Clear all pet morphing assignments.")
 
 -- State
-local petButtons = {}
+petButtons = {}
 local petSelectedIdx = nil
 local petFilteredList = {}
 
@@ -265,8 +273,8 @@ btnResetPet:SetScript("OnClick", function()
         ns.SendMorphCommand("PET_RESET")
         ns.SendMorphCommand("HPET_RESET")
         ns.SendMorphCommand("HPET_SCALE:1.0")
-        if TransmorpherCharacterState then 
-            TransmorpherCharacterState.HunterPetScale = nil 
+        if TransmorpherCharacterState then
+            TransmorpherCharacterState.HunterPetScale = nil
             TransmorpherCharacterState.PetDisplay = nil
             TransmorpherCharacterState.PetName = nil
         end

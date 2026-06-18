@@ -424,17 +424,27 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
         
         -- CHARACTER ISOLATION: If the GUID changed, wipe the old character's state
         -- to prevent pollutions when broadcasting.
-        local currentGUID = UnitGUID("player") or ""
-        if TransmorpherCharacterState and TransmorpherCharacterState._lastGUID and TransmorpherCharacterState._lastGUID ~= currentGUID then
-            ns.Log("Character change detected in Lua (%s -> %s), wiping state for isolation.", TransmorpherCharacterState._lastGUID, currentGUID)
-            -- Preserve settings, wipe morph state
-            TransmorpherCharacterState = {
-                Items = {}, Morph = nil, Scale = nil, MountDisplay = nil,
-                PetDisplay = nil, Mounts = {}, HiddenItems = {}, WeaponSets = {},
-                Forms = {}, SpellMorphs = {}, _lastGUID = currentGUID
-            }
+        -- IMPORTANT: On 3.3.5a, UnitGUID("player") is NOT reliably available at
+        -- PLAYER_LOGIN — it can return nil/"" until PLAYER_ENTERING_WORLD. If we
+        -- treated that empty value as a "different character", every relogin would
+        -- wipe TransmorpherCharacterState (which is ALREADY a SavedVariablesPerCharacter,
+        -- so the client itself isolates per-character state). Only compare/update
+        -- _lastGUID when we actually have a real GUID.
+        local currentGUID = UnitGUID("player")
+        if currentGUID and currentGUID ~= "" then
+            if TransmorpherCharacterState and TransmorpherCharacterState._lastGUID
+               and TransmorpherCharacterState._lastGUID ~= ""
+               and TransmorpherCharacterState._lastGUID ~= currentGUID then
+                ns.Log("Character change detected in Lua (%s -> %s), wiping state for isolation.", TransmorpherCharacterState._lastGUID, currentGUID)
+                -- Preserve settings, wipe morph state
+                TransmorpherCharacterState = {
+                    Items = {}, Morph = nil, Scale = nil, MountDisplay = nil,
+                    PetDisplay = nil, Mounts = {}, HiddenItems = {}, WeaponSets = {},
+                    Forms = {}, SpellMorphs = {}, _lastGUID = currentGUID
+                }
+            end
+            TransmorpherCharacterState._lastGUID = currentGUID
         end
-        TransmorpherCharacterState._lastGUID = currentGUID
         
         if ns.ClearAllRuntimeSpellMorphs then
             ns.ClearAllRuntimeSpellMorphs()
@@ -478,6 +488,24 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
 
         ns.RestoreMorphedUI()
 
+        if ns.ApplyHideCVars then ns.ApplyHideCVars() end
+        if ns.PushPlayerSoundMute then ns.PushPlayerSoundMute() end
+
+        -- Sync the saved per-slot skins (donor item id + tint) to the DLL on login.
+        -- We push the DESIRE only (ITEM_SKIN_PERSIST), NOT a live retex: the DLL
+        -- re-binds each skin to whatever its slot is actually rendering once the
+        -- morphed items are stamped into the descriptor (its MorphGuard reconcile),
+        -- so all skins land on the right item with no pre-morph mis-bind / flash.
+        -- The DLL also loaded the same data from its own state file before the first
+        -- frame, so the look is already correct on login; this is the authoritative
+        -- re-sync from SavedVariables in case the two ever diverged.
+        if ns.Skin_PersistAll then ns.Skin_PersistAll() end
+
+        -- Re-send the saved barber look (skin/face/hair). The DLL also re-applies it
+        -- from its own state file before the first frame; this is the authoritative
+        -- re-sync from SavedVariables in case the two diverged.
+        if ns.Barber_ApplyAll then ns.Barber_ApplyAll() end
+
         -- Multiplayer Sync
         if ns.BroadcastMorphState then ns.BroadcastMorphState(true) end
         
@@ -495,12 +523,18 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
         end
         lastKnownForm = GetShapeshiftForm()
         lastKnownMounted = (IsMounted() and not UnitInVehicle("player")) or false
-        
-        -- Reset mount manager cache so mount morph is re-sent after teleport
-        if ns.MountManager.ResetForZoneChange then
+
+        -- Reset the mount dedup cache ONLY on a real world load (PLAYER_ENTERING_WORLD),
+        -- so the mount morph is re-sent after an actual loading-screen teleport. On a
+        -- SEAMLESS zone-boundary cross (ZONE_CHANGED_NEW_AREA, e.g. flying out of
+        -- Dalaran) the DLL still holds & enforces the mount morph every tick, so wiping
+        -- the cache here would force a redundant MOUNT_MORPH re-send = the visible
+        -- "jump"/reload while mounted. Keeping the cache means ApplyCorrectMorph sees
+        -- no change and sends nothing → no rebuild, no jump.
+        if event == "PLAYER_ENTERING_WORLD" and ns.MountManager.ResetForZoneChange then
             ns.MountManager.ResetForZoneChange()
         end
-        
+
         ns.CheckFormMorphs()
 
         if not ns.currentFormMorph then
@@ -517,8 +551,14 @@ mainFrame:SetScript("OnEvent", function(self, event, ...)
             if ns.morphSuspended or ns.dbwSuspended or ns.vehicleSuspended then
                 ns.SendRawMorphCommand("SUSPEND")
             end
-            -- NO ScheduleMorphSend here! PLAYER_LOGIN already handles it.
-            -- The DLL has persisted state, so re-sending on zone change is unnecessary.
+            -- Re-push the full saved morph state on every world load. The DLL
+            -- normally persists its own state across loading screens, but on some
+            -- installs (different WTF location, dinput8 state file missing/locked,
+            -- or first zone after a reload that wiped DLL memory) it does not, and
+            -- the morph silently disappears on teleport. Re-sending is cheap (the
+            -- DLL dedupes identical descriptors) and guarantees the user's saved
+            -- morph survives every zone change / teleport.
+            ScheduleMorphSend(0.05)
         end
 
         if lastKnownMounted then

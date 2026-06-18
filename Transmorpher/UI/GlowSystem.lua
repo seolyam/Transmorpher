@@ -15,6 +15,7 @@ local glowColors = {
     gold   = { inner={1.0, 0.82, 0.40}, border={1.0, 0.75, 0.10}, outer={1.0, 0.60, 0.0} },
     purple = { inner={0.80, 0.50, 1.00}, border={0.65, 0.25, 0.95}, outer={0.50, 0.10, 0.85} },
     blue   = { inner={0.40, 0.70, 1.00}, border={0.10, 0.50, 1.00}, outer={0.00, 0.30, 0.90} },
+    pink   = { inner={1.00, 0.45, 0.82}, border={1.00, 0.18, 0.68}, outer={0.95, 0.05, 0.55} },
     green  = { inner={0.50, 1.00, 0.50}, border={0.15, 0.90, 0.15}, outer={0.05, 0.75, 0.05} },
     red    = { inner={1.00, 0.40, 0.40}, border={0.90, 0.10, 0.10}, outer={0.75, 0.00, 0.00} },
 }
@@ -23,9 +24,15 @@ local morphGlowAnimFrame = CreateFrame("Frame")
 morphGlowAnimFrame:Hide()
 local morphGlowSlots = {}
 local morphGlowTimer = 0
+local morphGlowUpdateElapsed = 0
+local GLOW_UPDATE_INTERVAL = 1 / 30
 
 morphGlowAnimFrame:SetScript("OnUpdate", function(self, dt)
     morphGlowTimer = morphGlowTimer + dt
+    morphGlowUpdateElapsed = morphGlowUpdateElapsed + dt
+    if morphGlowUpdateElapsed < GLOW_UPDATE_INTERVAL then return end
+    local updateStep = morphGlowUpdateElapsed
+    morphGlowUpdateElapsed = 0
 
     -- Sync animations with different frequencies for "alive" feel
     local pulseFast = 0.5 + 0.5 * math.sin(morphGlowTimer * 5.0)
@@ -37,7 +44,7 @@ morphGlowAnimFrame:SetScript("OnUpdate", function(self, dt)
             -- Fade-in multiplier (0→1 over 0.3s)
             local fadeMul = 1
             if layers.fadeInElapsed then
-                layers.fadeInElapsed = layers.fadeInElapsed + dt
+                layers.fadeInElapsed = layers.fadeInElapsed + updateStep
                 if layers.fadeInElapsed < 0.3 then
                     fadeMul = layers.fadeInElapsed / 0.3
                 else
@@ -47,16 +54,19 @@ morphGlowAnimFrame:SetScript("OnUpdate", function(self, dt)
 
             -- Layer 1: Subtle inner shimmer (Boosted)
             layers.inner:SetAlpha((0.15 + 0.15 * shimmer) * fadeMul)
+            if layers.inner2 then layers.inner2:SetAlpha((0.14 + 0.14 * shimmer) * fadeMul) end
 
             -- Layer 2: Main Border Breathing (Strong peak)
             layers.border:SetAlpha((0.70 + 0.30 * pulseSlow) * fadeMul)
+            if layers.border2 then layers.border2:SetAlpha((0.62 + 0.28 * pulseSlow) * fadeMul) end
 
             -- Layer 3: Outer Halo Pulse (Much stronger "Bloom" effect)
             layers.outer:SetAlpha((0.40 + 0.50 * pulseFast) * fadeMul)
+            if layers.outer2 then layers.outer2:SetAlpha((0.34 + 0.42 * pulseFast) * fadeMul) end
 
             -- Confirmation flash fade-out
             if layers.flash and layers.flashElapsed then
-                layers.flashElapsed = layers.flashElapsed + dt
+                layers.flashElapsed = layers.flashElapsed + updateStep
                 
                 -- Flash hold/fade durations
                 local holdTime = 1.0
@@ -137,9 +147,46 @@ local function AddMorphGlow(slot, colorType)
     return layers
 end
 
+local function HideGradientLayers(layers)
+    if not layers then return end
+    if layers.inner2 then layers.inner2:Hide() end
+    if layers.border2 then layers.border2:Hide() end
+    if layers.outer2 then layers.outer2:Hide() end
+end
+
+local function EnsureGradientLayers(slot, layers)
+    if layers.inner2 then return end
+
+    local inner2 = slot:CreateTexture(nil, "OVERLAY", nil, 1)
+    inner2:SetPoint("TOPLEFT", slot, "TOP", 0, -1)
+    inner2:SetPoint("BOTTOMRIGHT", slot, "BOTTOMRIGHT", -1, 1)
+    inner2:SetTexture(WHITE_TEXTURE)
+    inner2:SetBlendMode("ADD")
+    inner2:Hide()
+    layers.inner2 = inner2
+
+    local border2 = slot:CreateTexture(nil, "OVERLAY", nil, 2)
+    border2:SetPoint("TOPLEFT", slot, "TOP", -4, 12)
+    border2:SetPoint("BOTTOMRIGHT", slot, "BOTTOMRIGHT", 12, -12)
+    border2:SetTexture(GLOW_TEXTURE)
+    border2:SetBlendMode("ADD")
+    border2:Hide()
+    layers.border2 = border2
+
+    local outer2 = slot:CreateTexture(nil, "OVERLAY", nil, 3)
+    outer2:SetPoint("TOPLEFT", slot, "TOP", -6, 18)
+    outer2:SetPoint("BOTTOMRIGHT", slot, "BOTTOMRIGHT", 18, -18)
+    outer2:SetTexture(HALO_TEXTURE)
+    outer2:SetBlendMode("ADD")
+    outer2:Hide()
+    layers.outer2 = outer2
+end
+
 function ns.ShowMorphGlow(slot, colorType)
     if not slot then return end
     local layers = AddMorphGlow(slot, colorType)
+    slot.glowColorType = colorType or "gold"
+    HideGradientLayers(layers)
     
     -- Update colors if type changed
     local color = glowColors[colorType] or glowColors.gold
@@ -155,12 +202,37 @@ function ns.ShowMorphGlow(slot, colorType)
     morphGlowAnimFrame:Show()
 end
 
+function ns.ShowMorphGlowGradient(slot, leftColorType, rightColorType)
+    if not slot then return end
+    local layers = AddMorphGlow(slot, leftColorType)
+    local left = glowColors[leftColorType] or glowColors.gold
+    local right = glowColors[rightColorType] or glowColors.blue
+
+    slot.glowColorType = leftColorType or "gold"
+    slot.glowColorType2 = rightColorType or "blue"
+    layers.inner:SetVertexColor(left.inner[1], left.inner[2], left.inner[3])
+    layers.border:SetVertexColor(left.border[1], left.border[2], left.border[3])
+    layers.outer:SetVertexColor(left.outer[1], left.outer[2], left.outer[3])
+
+    EnsureGradientLayers(slot, layers)
+    layers.inner2:SetVertexColor(right.inner[1], right.inner[2], right.inner[3])
+    layers.border2:SetVertexColor(right.border[1], right.border[2], right.border[3])
+    layers.outer2:SetVertexColor(right.outer[1], right.outer[2], right.outer[3])
+
+    layers.inner:Show(); layers.border:Show(); layers.outer:Show()
+    layers.inner2:Show(); layers.border2:Show(); layers.outer2:Show()
+    layers.fadeInElapsed = 0
+    morphGlowSlots[slot] = layers
+    morphGlowAnimFrame:Show()
+end
+
 function ns.HideMorphGlow(slot)
     if not slot then return end
     if slot.morphGlowLayers then
         slot.morphGlowLayers.inner:Hide()
         slot.morphGlowLayers.border:Hide()
         slot.morphGlowLayers.outer:Hide()
+        HideGradientLayers(slot.morphGlowLayers)
     end
     morphGlowSlots[slot] = nil
     

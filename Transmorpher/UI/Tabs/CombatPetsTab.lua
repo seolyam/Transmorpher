@@ -7,6 +7,7 @@ local addon, ns = ...
 local mainFrame = ns.mainFrame
 local hpetTab = mainFrame.tabs.combatPets
 local ROW_HEIGHT = 28
+local hpetButtons, hpetSelectedIdx, hpetFilteredList
 
 local MODE_CURATED, MODE_ALL = 1, 2
 local currentMode = MODE_CURATED
@@ -142,7 +143,7 @@ local function UpdateStatusLabels()
             hpName = ns.creatureDisplayDB[state.HunterPetDisplay]
         end
     end
-    
+
     local scaleText = state.HunterPetScale and string.format(" (Scale: %.1f)", state.HunterPetScale) or ""
     statusLabel:SetText("|cffffd700Combat Pet:|r " .. (hpName and ("|cffaaccff" .. hpName .. "|r") or "|cff6a6050None|r") .. "|cff888888" .. scaleText .. "|r")
 end
@@ -170,6 +171,13 @@ local listScroll = CreateFrame("ScrollFrame", "$parentHPetListScroll", listBg, "
 listScroll:SetPoint("TOPLEFT", 4, -20); listScroll:SetPoint("BOTTOMRIGHT", -22, 4)
 local listContent = CreateFrame("Frame", "$parentHPetListContent", listScroll)
 listContent:SetSize(listScroll:GetWidth(), 1); listScroll:SetScrollChild(listContent)
+listScroll:SetScript("OnSizeChanged", function(self, w)
+    local width = math.max(1, (w or 0) - 4)
+    listContent:SetWidth(width)
+    if hpetButtons then
+        for _, row in ipairs(hpetButtons) do row:SetWidth(math.max(1, width - 4)) end
+    end
+end)
 
 -- ========== BOTTOM BAR ==========
 local bottomBar = CreateFrame("Frame", nil, hpetTab)
@@ -231,7 +239,7 @@ local resultCount = bottomBar:CreateFontString(nil, "OVERLAY", "GameFontDisableS
 resultCount:SetPoint("RIGHT", -8, 0)
 
 -- ========== STATE ==========
-local hpetButtons, hpetSelectedIdx, hpetFilteredList = {}, nil, {}
+hpetButtons, hpetSelectedIdx, hpetFilteredList = {}, nil, {}
 local MAX_RESULTS = 200
 
 local function FilterCurated(query)
@@ -334,8 +342,8 @@ local function BuildHPetList()
             hpetSelectedIdx = idx; rowBg:SetTexture(0.6, 0.48, 0.15, 0.3)
             if ns.IsMorpherReady() then
                 ns.SendMorphCommand("HPET_MORPH:"..entry.displayID); ns.SendMorphCommand("HPET_SCALE:1.0")
-                if TransmorpherCharacterState then 
-                    TransmorpherCharacterState.HunterPetScale = 1.0 
+                if TransmorpherCharacterState then
+                    TransmorpherCharacterState.HunterPetScale = 1.0
                     TransmorpherCharacterState.HunterPetDisplay = entry.displayID
                     TransmorpherCharacterState.HunterPetName = entry.name
                 end
@@ -407,8 +415,8 @@ btnSetHPet:SetScript("OnClick", function()
         local entry = hpetFilteredList[hpetSelectedIdx]
         if ns.IsMorpherReady() then
             ns.SendMorphCommand("HPET_MORPH:"..entry.displayID); ns.SendMorphCommand("HPET_SCALE:1.0")
-            if TransmorpherCharacterState then 
-                TransmorpherCharacterState.HunterPetScale = 1.0 
+            if TransmorpherCharacterState then
+                TransmorpherCharacterState.HunterPetScale = 1.0
                 TransmorpherCharacterState.HunterPetDisplay = entry.displayID
                 TransmorpherCharacterState.HunterPetName = entry.name
             end

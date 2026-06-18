@@ -563,6 +563,153 @@ function ns.SendRawMorphCommand(cmd)
 end
 
 -- ============================================================
+-- DISTANCE-CULL: party/raid member protection
+-- The DLL keeps the protected set for member character models only; pets/summons
+-- from party/raid members can still be hidden by the pet/summon toggles.
+-- ============================================================
+local lastHideGroupCSV = nil
+
+function ns.BuildHideGroupCSV()
+    local guids = {}
+    local raidN = (GetNumRaidMembers and GetNumRaidMembers()) or 0
+    if raidN and raidN > 0 then
+        for i = 1, raidN do
+            local g = UnitGUID("raid" .. i)
+            if g then guids[#guids + 1] = g end
+        end
+    else
+        local partyN = (GetNumPartyMembers and GetNumPartyMembers()) or 0
+        for i = 1, (partyN or 0) do
+            local g = UnitGUID("party" .. i)
+            if g then guids[#guids + 1] = g end
+        end
+    end
+    return table.concat(guids, ",")
+end
+
+function ns.PushHideGroupList(force)
+    if ns.isShuttingDown then return end
+    local csv = ns.BuildHideGroupCSV()
+    if force or csv ~= lastHideGroupCSV then
+        lastHideGroupCSV = csv
+        ns.SendRawMorphCommand("HIDE_GROUP_LIST:" .. csv)
+    end
+end
+
+-- Apply the CVar-based "extra FPS" toggles (chat bubbles). Global.
+-- NOTE: "Mute Sound Effects" no longer uses the Sound_EnableSFX CVar (which killed
+-- EVERY world sound). It is now a DLL per-source filter that mutes ONLY other players'
+-- sounds; it is pushed via MUTE_PLAYER_SOUNDS (see ns.PushPlayerSoundMute).
+-- Every nameplate CVar (RE-verified present in wow.exe 3.3.5a). Setting them all to "0" stops the
+-- engine from creating ANY nameplate (cheaper than hiding frames after the fact).
+local NAMEPLATE_CVARS = {
+    "nameplateShowEnemies", "nameplateShowFriends",
+    "nameplateShowEnemyTotems", "nameplateShowEnemyGuardians", "nameplateShowEnemyPets",
+    "nameplateShowFriendlyTotems", "nameplateShowFriendlyGuardians", "nameplateShowFriendlyPets",
+}
+
+function ns.ApplyHideCVars()
+    local s = ns.GetSettings()
+    pcall(SetCVar, "chatBubbles", s.hideChatBubbles and "0" or "1")
+    pcall(SetCVar, "chatBubblesParty", s.hideChatBubbles and "0" or "1")
+    -- Hide ALL nameplates (cleanup toggle). Forced off on login/apply so a fresh login never
+    -- pops nameplates. We snapshot the prior values the first time we hide and restore them when
+    -- the toggle is turned off, so the user's normal nameplate prefs come back.
+    if s.hideNameplates then
+        if not ns._savedNameplateCVars then
+            ns._savedNameplateCVars = {}
+            for _, c in ipairs(NAMEPLATE_CVARS) do ns._savedNameplateCVars[c] = GetCVar(c) end
+        end
+        for _, c in ipairs(NAMEPLATE_CVARS) do pcall(SetCVar, c, "0") end
+    elseif ns._savedNameplateCVars then
+        for _, c in ipairs(NAMEPLATE_CVARS) do
+            local v = ns._savedNameplateCVars[c]
+            if v then pcall(SetCVar, c, v) end
+        end
+        ns._savedNameplateCVars = nil
+    end
+end
+
+-- Push the "mute other players' sounds" state to the DLL. Other players' footsteps,
+-- voices, spell and combat sounds are dropped; the local player, NPCs, UI, music and
+-- ambient keep playing. Re-pushed on login / DLL-ready so it survives a reload.
+function ns.PushPlayerSoundMute()
+    if ns.isShuttingDown then return end
+    if not (ns.IsMorpherReady and ns.IsMorpherReady()) then return end
+    local s = ns.GetSettings()
+    ns.SendRawMorphCommand("MUTE_PLAYER_SOUNDS:" .. (s.hideOtherSounds and "1" or "0"))
+end
+
+-- Production: ensure dbCompress is 0 for THIS running session too. The DLL patches
+-- Config.wtf on disk at startup (takes effect next launch / for the WDB cache); setting
+-- the live CVar here means the client also writes "0" back on a clean exit, so the two
+-- never fight. Best-effort and harmless if the CVar is protected.
+do
+    local cvarFrame = CreateFrame("Frame")
+    cvarFrame:RegisterEvent("PLAYER_LOGIN")
+    cvarFrame:SetScript("OnEvent", function()
+        pcall(SetCVar, "dbCompress", "0")
+    end)
+end
+
+local hideGroupWatcher = CreateFrame("Frame")
+hideGroupWatcher:RegisterEvent("PARTY_MEMBERS_CHANGED")
+hideGroupWatcher:RegisterEvent("RAID_ROSTER_UPDATE")
+hideGroupWatcher:RegisterEvent("PARTY_MEMBER_ENABLE")
+hideGroupWatcher:SetScript("OnEvent", function()
+    if ns.IsMorpherReady and ns.IsMorpherReady() then
+        ns.PushHideGroupList(false)
+    end
+end)
+
+-- ============================================================
+-- ENCOUNTER BOSS protection: mirror the client's own boss frames (boss1..5) to the
+-- DLL via the canonical UnitGUID() API. This is the authoritative "is a boss" signal
+-- (many raid bosses — e.g. Lady Deathwhisper — are creature-rank "elite", so only the
+-- boss-frame list identifies them). The DLL hard-protects these GUIDs and their owned
+-- ground effects so encounter mechanics are ALWAYS visible. Pushed only on change.
+-- ============================================================
+local lastBossCSV = nil
+function ns.PushBossList(force)
+    if ns.isShuttingDown then return end
+    if not (ns.IsMorpherReady and ns.IsMorpherReady()) then return end
+    local guids = {}
+    for i = 1, 5 do
+        local u = "boss" .. i
+        if UnitExists(u) then
+            local g = UnitGUID(u)
+            if g then guids[#guids + 1] = g end
+        end
+    end
+    -- Also protect the current target if the CLIENT itself classifies it a world boss.
+    if UnitExists("target") and UnitClassification("target") == "worldboss" then
+        local g = UnitGUID("target")
+        if g then guids[#guids + 1] = g end
+    end
+    local csv = table.concat(guids, ",")
+    if force or csv ~= lastBossCSV then
+        lastBossCSV = csv
+        ns.SendRawMorphCommand("SC_BOSSES:" .. csv)
+    end
+end
+
+local bossWatcher = CreateFrame("Frame")
+for _, ev in ipairs({ "PLAYER_TARGET_CHANGED", "PLAYER_FOCUS_CHANGED", "PLAYER_REGEN_DISABLED",
+                      "PLAYER_REGEN_ENABLED", "INSTANCE_ENCOUNTER_ENGAGE_UNIT", "UNIT_TARGET",
+                      "PLAYER_ENTERING_WORLD", "RAID_ROSTER_UPDATE" }) do
+    pcall(function() bossWatcher:RegisterEvent(ev) end)
+end
+bossWatcher:SetScript("OnEvent", function() ns.PushBossList(false) end)
+-- Fallback poll while in combat (covers servers that don't fire encounter events).
+local bossAccum = 0
+bossWatcher:SetScript("OnUpdate", function(self, elapsed)
+    bossAccum = bossAccum + (elapsed or 0)
+    if bossAccum < 1.0 then return end
+    bossAccum = 0
+    if InCombatLockdown and InCombatLockdown() then ns.PushBossList(false) end
+end)
+
+-- ============================================================
 -- DLL STATUS
 -- ============================================================
 
@@ -660,24 +807,40 @@ function ns.InitializeDLLSettings()
     ns.SendRawMorphCommand("SET:DBW:0")
     ns.SendRawMorphCommand("SET:META:" .. (settings.showMetamorphosis and "1" or "0"))
     ns.SendRawMorphCommand("SET:SHAPE:" .. (settings.morphInShapeshift and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_ALL:" .. (settings.hideAllSpells and "1" or "0"))
     ns.SendRawMorphCommand("SET:SHOW_OWN_SPELLS:" .. (settings.showOwnSpells and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_PRECAST:" .. (settings.hidePrecast and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_CAST:" .. (settings.hideCast and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_CHANNEL:" .. (settings.hideChannel and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_AURA_START:" .. (settings.hideAuraStart and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_AURA_END:" .. (settings.hideAuraEnd and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_IMPACT:" .. (settings.hideImpact and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_IMPACT_CASTER:" .. (settings.hideImpactCaster and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_IMPACT_TARGET:" .. (settings.hideTargetImpact and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_AREA_INSTANT:" .. (settings.hideAreaInstant and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_AREA_IMPACT:" .. (settings.hideAreaImpact and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_AREA_PERSISTENT:" .. (settings.hideAreaPersistent and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_MISSILE:" .. (settings.hideMissile and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_MISSILE_MARKER:" .. (settings.hideMissileMarker and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_SOUND_MISSILE:" .. (settings.hideSoundMissile and "1" or "0"))
-    ns.SendRawMorphCommand("SET:HIDE_SOUND_EVENT:" .. (settings.hideSoundEvent and "1" or "0"))
-    
+    ns.PushSpellClassState(settings)
+    ns.SendRawMorphCommand("SET:CAMERA_FOV:" .. (settings.cameraFov or 0))
+    -- Distance culling. Push radius + categories first, then the master switch last.
+    ns.SendRawMorphCommand("SET:HIDE_PLAYERS_DIST:" .. (settings.hidePlayersDistance or 30))
+    ns.SendRawMorphCommand("SET:HIDE_PLAYERS:" .. (settings.hideCatPlayers and "1" or "0"))
+    ns.SendRawMorphCommand("SET:HIDE_PETS:" .. (settings.hideCatPets and "1" or "0"))
+    ns.SendRawMorphCommand("SET:HIDE_NPCS:" .. (settings.hideCatNpcs and "1" or "0"))
+    ns.SendRawMorphCommand("SET:HIDE_OBJECTS:" .. (settings.hideCatObjects and "1" or "0"))
+    ns.SendRawMorphCommand("SET:HIDE_CORPSES:" .. (settings.hideCatCorpses and "1" or "0"))
+    ns.SendRawMorphCommand("SET:HIDE_OTHER_SUMMONS:" .. (settings.hideOtherSummons and "1" or "0"))
+    ns.SendRawMorphCommand("SET:HIDE_SHOW_GROUP:" .. (settings.hideShowGroup and "1" or "0"))
+    if ns.PushHideGroupList then ns.PushHideGroupList(true) end
+    ns.SendRawMorphCommand("SET:HIDE_SHADOWS:" .. (settings.hideShadows and "1" or "0"))
+    if ns.ApplyHideCVars then ns.ApplyHideCVars() end
+    if ns.PushPlayerSoundMute then ns.PushPlayerSoundMute() end
+    ns.SendRawMorphCommand("SET:HIDE_PLAYERS_ENABLED:" .. (settings.hidePlayersEnabled and "1" or "0"))
+    if ns.Color_ApplyAll then ns.Color_ApplyAll() end
+
+    -- Stamp saved morph/loadout descriptors before mirroring saved skins. Otherwise
+    -- ITEM_SKIN_PERSIST can see the base equipped items and anchor colors to them,
+    -- then the later morph descriptor update makes the DLL clear those colors as stale.
+    if ns.SendFullMorphState then
+        ns.SendFullMorphState()
+    end
+
+    -- Mirror saved per-slot skins to the DLL now that it is ready. We push the desire
+    -- only (ITEM_SKIN_PERSIST); the DLL binds each skin to the correctly-rendered item
+    -- itself, so there is no pre-morph mis-bind / login flash.
+    if ns.Skin_PersistAll then ns.Skin_PersistAll() end
+
+    -- Re-send the saved barber look now that the DLL is ready.
+    if ns.Barber_ApplyAll then ns.Barber_ApplyAll() end
+
     -- Sync White Card (Protection) List
     ns.SendRawMorphCommand("SPELL_WHITE_CLEAR")
     if settings.whiteCardSpells then
@@ -696,11 +859,6 @@ function ns.InitializeDLLSettings()
     dllSettingsInitialized = true
     dllInitRetryFrame:Hide()
     
-    -- Sync all saved state to the DLL immediately upon initialization
-    if ns.SendFullMorphState then
-        ns.SendFullMorphState()
-    end
-
     if type(Log) == "function" then
         Log("DLL settings initialized: DBW=0, META=%s, SHAPE=%s",
             settings.showMetamorphosis and "1" or "0",
@@ -895,24 +1053,9 @@ function ns.SendFullMorphState()
 
 
 
-    -- Optimization Settings (Granular)
-    table.insert(cmdQueue, "SET:HIDE_ALL:" .. (settings.hideAllSpells and "1" or "0"))
+    -- Spell filtering: spellbook protection + the per-unit-class filter state.
     table.insert(cmdQueue, "SET:SHOW_OWN_SPELLS:" .. (settings.showOwnSpells and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_PRECAST:" .. (settings.hidePrecast and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_CAST:" .. (settings.hideCast and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_CHANNEL:" .. (settings.hideChannel and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_AURA_START:" .. (settings.hideAuraStart and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_AURA_END:" .. (settings.hideAuraEnd and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_IMPACT:" .. (settings.hideImpact and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_IMPACT_CASTER:" .. (settings.hideImpactCaster and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_IMPACT_TARGET:" .. (settings.hideTargetImpact and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_AREA_INSTANT:" .. (settings.hideAreaInstant and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_AREA_IMPACT:" .. (settings.hideAreaImpact and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_AREA_PERSISTENT:" .. (settings.hideAreaPersistent and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_MISSILE:" .. (settings.hideMissile and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_MISSILE_MARKER:" .. (settings.hideMissileMarker and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_SOUND_MISSILE:" .. (settings.hideSoundMissile and "1" or "0"))
-    table.insert(cmdQueue, "SET:HIDE_SOUND_EVENT:" .. (settings.hideSoundEvent and "1" or "0"))
+    ns.PushSpellClassState(settings)
 
     -- Protection Whitelist (White Card)
     table.insert(cmdQueue, "SPELL_WHITE_CLEAR")
@@ -931,4 +1074,62 @@ function ns.SendFullMorphState()
     end
 
     ns.SyncPlayerSpellbookVisibility(true)
+end
+
+-- Pushes the full intelligent spell-filter state to the DLL: a SC_RESET to clear
+-- the DLL side, then the master enable, the global "hide all"/category set, and
+-- every selected target row. Only TRUE entries are sent (RESET already zeroes the
+-- rest), so the command string stays small.
+function ns.PushSpellClassState(settings)
+    settings = settings or ns.GetSettings()
+    local q = { "SC_RESET" }
+    q[#q + 1] = "SC_ENABLE:" .. (settings.scEnabled and "1" or "0")
+    q[#q + 1] = "SC_HIDEALL:" .. (settings.scHideAll and "1" or "0")
+    -- Hide other players' enchant glows: independent engine toggle (not cleared by
+    -- SC_RESET above), so push it explicitly to survive /reload and relog.
+    q[#q + 1] = "SC_ENCHANTS:" .. (settings.hideOtherEnchants and "1" or "0")
+    q[#q + 1] = "SC_ENCHANTS_NPC:" .. (settings.hideNpcEnchants and "1" or "0")
+    -- Hide other players' attack ANIMATION (swing): independent engine toggle.
+    q[#q + 1] = "SC_SWING:" .. (settings.hideOtherSwing and "1" or "0")
+    local gc = settings.scGlobalCat or {}
+    for cat, v in pairs(gc) do
+        if v then q[#q + 1] = "SC_GCAT:" .. cat .. ":1" end
+    end
+    local sl = settings.scSelected or {}
+    local selectedRows = {}
+    for row, v in pairs(sl) do
+        if v then
+            local n = tonumber(row) or row
+            -- Legacy UI row 11 was a confusing shortcut for player characters + pets.
+            -- Keep the behavior, but sync it as the explicit rows now shown in the UI.
+            if n == 11 then
+                selectedRows[3] = true
+                selectedRows[4] = true
+            else
+                selectedRows[n] = true
+            end
+        end
+    end
+    for row in pairs(selectedRows) do
+        q[#q + 1] = "SC_SEL:" .. row .. ":1"
+    end
+    ns.SendRawMorphCommand(table.concat(q, "|"))
+
+    -- Re-apply the left-column "All Units" simple toggles. These live in their own
+    -- DLL store (independent of the board) but SC_RESET above cleared it, so we must
+    -- restore them here so they survive /reload and relog. Only push the ones that
+    -- are on; the SET handler sets g_applyAll + auto-enables when any is active.
+    local SIMPLE = {
+        { "hidePrecast",        "HIDE_PRECAST" },        { "hideCast",            "HIDE_CAST" },
+        { "hideChannel",        "HIDE_CHANNEL" },        { "hideAuraStart",       "HIDE_AURA_START" },
+        { "hideAuraEnd",        "HIDE_AURA_END" },       { "hideImpact",          "HIDE_IMPACT" },
+        { "hideImpactCaster",   "HIDE_IMPACT_CASTER" },  { "hideTargetImpact",    "HIDE_IMPACT_TARGET" },
+        { "hideAreaInstant",    "HIDE_AREA_INSTANT" },   { "hideAreaImpact",      "HIDE_AREA_IMPACT" },
+        { "hideAreaPersistent", "HIDE_AREA_PERSISTENT" },{ "hideMissile",         "HIDE_MISSILE" },
+        { "hideMissileMarker",  "HIDE_MISSILE_MARKER" }, { "hideSoundMissile",    "HIDE_SOUND_MISSILE" },
+        { "hideSoundEvent",     "HIDE_SOUND_EVENT" },
+    }
+    for _, def in ipairs(SIMPLE) do
+        if settings[def[1]] then ns.SendRawMorphCommand("SET:" .. def[2] .. ":1") end
+    end
 end

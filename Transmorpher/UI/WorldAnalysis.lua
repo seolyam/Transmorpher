@@ -4,6 +4,8 @@ local registeredCheckboxes = {}
 local registeredSliderRefreshers = {}
 local suppressUiCallbacks = false
 local analysisScrollCounter = 0
+local ANALYSIS_ACTIVATION_FLAG = "worldAnalysisManualActivation"
+local lastAnalysisPayload = nil
 
 local ANALYSIS_DEFAULTS = {
     worldRenderLiquidSurface = true,
@@ -124,10 +126,35 @@ local function applyAnalysisDefaults()
     end
 end
 
+local function markAnalysisActivated()
+    getSettings()[ANALYSIS_ACTIVATION_FLAG] = true
+end
+
+local function isAnalysisActivated()
+    local settings = getSettings()
+    return settings[ANALYSIS_ACTIVATION_FLAG] and true or false
+end
+
 function ns.QueueWorldAnalysisSync()
     if not ns.IsMorpherReady or not ns.IsMorpherReady() then return end
 
-    local payload = {}
+    if not isAnalysisActivated() then
+        -- Not manually activated: tell the DLL to stay/return fully inert (restore the
+        -- engine's own render flags and drop smooth-texture forcing). This must be a
+        -- NON-empty payload so the DLL actually receives the deactivation — sending ""
+        -- left a previously-applied override stuck, which read as the engine default
+        -- being overridden (empty/pink world, world re-stream).
+        local offPayload = "renderenable=0;smoothtex=0"
+        if lastAnalysisPayload ~= offPayload then
+            TRANSMORPHER_ANALYSIS_CFG = offPayload
+            lastAnalysisPayload = offPayload
+        end
+        return
+    end
+
+    -- "renderenable=1" first so the DLL arms the render-flag override before the
+    -- individual flag values land in the same payload.
+    local payload = { "renderenable=1" }
     for _, entry in ipairs(ANALYSIS_SYNC_KEYS) do
         if entry.valueType == "float" then
             local value = tonumber(getAnalysisSetting(entry.settingKey)) or ANALYSIS_DEFAULTS[entry.settingKey] or 0
@@ -137,7 +164,11 @@ function ns.QueueWorldAnalysisSync()
         end
     end
 
-    TRANSMORPHER_ANALYSIS_CFG = table.concat(payload, ";")
+    local encoded = table.concat(payload, ";")
+    if encoded ~= lastAnalysisPayload then
+        TRANSMORPHER_ANALYSIS_CFG = encoded
+        lastAnalysisPayload = encoded
+    end
 end
 
 local function refreshAnalysisControls()
@@ -155,6 +186,7 @@ ns.RefreshWorldAnalysisControls = refreshAnalysisControls
 
 function ns.ResetWorldAnalysisSettings()
     applyAnalysisDefaults()
+    getSettings()[ANALYSIS_ACTIVATION_FLAG] = false
     refreshAnalysisControls()
     ns.QueueWorldAnalysisSync()
 end
@@ -189,7 +221,7 @@ end
 local function createCard(parent, title, y, height)
     local card = CreateFrame("Frame", nil, parent)
     card:SetPoint("TOPLEFT", 10, y)
-    card:SetPoint("TOPRIGHT", -18, y)
+    card:SetPoint("TOPRIGHT", -10, y)
     card:SetHeight(height)
     applyCardStyle(card)
 
@@ -222,7 +254,7 @@ local function createCheckboxRow(parent, label, settingKey, y, tooltip)
     local row = CreateFrame("Frame", nil, parent)
     row:SetPoint("TOPLEFT", 12, y)
     row:SetPoint("TOPRIGHT", -12, y)
-    row:SetHeight(34)
+    row:SetHeight(24)
 
     local rowBg = row:CreateTexture(nil, "BACKGROUND")
     rowBg:SetTexture("Interface\\Buttons\\WHITE8x8")
@@ -246,6 +278,7 @@ local function createCheckboxRow(parent, label, settingKey, y, tooltip)
     cb:SetScript("OnClick", function(self)
         if suppressUiCallbacks then return end
         setAnalysisSetting(settingKey, self:GetChecked() and true or false)
+        markAnalysisActivated()
         ns.QueueWorldAnalysisSync()
         PlaySound(self:GetChecked() and "igMainMenuOptionCheckBoxOn" or "igMainMenuOptionCheckBoxOff")
     end)
@@ -329,6 +362,7 @@ local function populateAnalysis(content)
         updateSmoothBiasText(snapped)
         if suppressUiCallbacks then return end
         setAnalysisSetting("worldRenderSmoothTexturesBias", snapped)
+        markAnalysisActivated()
         ns.QueueWorldAnalysisSync()
     end)
     smoothBiasSlider:SetScript("OnMouseWheel", function(self, delta)
